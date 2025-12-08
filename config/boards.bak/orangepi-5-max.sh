@@ -6,8 +6,7 @@ export BOARD_SOC="Rockchip RK3588"
 export BOARD_CPU="ARM Cortex A76 / A55"
 export UBOOT_PACKAGE="u-boot-radxa-rk3588"
 export UBOOT_RULES_TARGET="orangepi-5-max-rk3588"
-#export COMPATIBLE_SUITES=("jammy" "noble" "oracular" "plucky")
-export COMPATIBLE_SUITES=("plucky")
+export COMPATIBLE_SUITES=("jammy" "noble" "oracular" "plucky")
 export COMPATIBLE_FLAVORS=("server" "desktop")
 
 function config_image_hook__orangepi-5-max() {
@@ -15,12 +14,11 @@ function config_image_hook__orangepi-5-max() {
     local overlay="$2"
     local suite="$3"
 
-    if [ "${suite}" == "jammy" ] || [ "${suite}" == "noble" ] || [ "${suite}" == "oracular" ] || [ "${suite}" == "plucky" ]; then
+    if [ "${suite}" == "jammy" ] || [ "${suite}" == "noble" ]; then
         # Kernel modules to blacklist
         echo "blacklist bcmdhd" > "${rootfs}/etc/modprobe.d/bcmdhd.conf"
         echo "blacklist dhd_static_buf" >> "${rootfs}/etc/modprobe.d/bcmdhd.conf"
 
-        if [ "${suite}" == "jammy" ] || [ "${suite}" == "noble" ]; then
         # Install panfork
         chroot "${rootfs}" add-apt-repository -y ppa:jjriek/panfork-mesa
         chroot "${rootfs}" apt-get update
@@ -29,8 +27,6 @@ function config_image_hook__orangepi-5-max() {
 
         # Install libmali blobs alongside panfork
         chroot "${rootfs}" apt-get -y install libmali-g610-x11
-        fi
-
 
         # Install the rockchip camera engine
         chroot "${rootfs}" apt-get -y install camera-engine-rkaiq-rk3588
