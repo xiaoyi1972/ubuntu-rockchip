@@ -29,12 +29,11 @@ function config_image_hook__orangepi-5-max() {
 
         # Install libmali blobs alongside panfork
         chroot "${rootfs}" apt-get -y install libmali-g610-x11
-        fi
-
-
+        
         # Install the rockchip camera engine
         chroot "${rootfs}" apt-get -y install camera-engine-rkaiq-rk3588
-
+        fi
+        
         # Install BCMDHD SDIO WiFi and Bluetooth DKMS
         chroot "${rootfs}" apt-get -y install dkms bcmdhd-sdio-dkms
 
