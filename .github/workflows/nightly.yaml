@@ -5,6 +5,14 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch:
 
+# 全局环境变量（抽离链接中的固定部分）
+env:
+  REPO_OWNER: xiaoyi1972          # 仓库所有者
+  REPO_NAME: ubuntu-rockchip      # 仓库名称
+  RELEASE_TAG: workflow           # Release 标签
+  ROOTFS_FILE_PREFIX: ubuntu      # rootfs 文件前缀
+  ROOTFS_ARCH: arm64              # 架构
+
 jobs:
   config:
     runs-on: ubuntu-22.04
@@ -66,18 +74,70 @@ jobs:
 
       - name: Debug - Check current directory and files
         run: |
-          pwd  # 输出当前工作目录
-          ls -la  # 列出所有文件，确认build.sh存在
-          ls -la config/suites/  # 确认suite配置文件存在
+          pwd
+          ls -la
+          ls -la config/suites/
 
       - name: Set environment variables
         id: vars
         run: |
           source config/suites/${{ matrix.suite }}.sh
-          # 修复变量名拼写错误：RELASE_VERSION → RELEASE_VERSION
           echo "suite_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          # 拼接目标 rootfs 文件名（zip 包）
+          ROOTFS_ZIP_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs.zip"
+          # 拼接目标 rootfs 解压后的文件名（tar.xz）
+          ROOTFS_TAR_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}.rootfs.tar.xz"
+          # 拼接远程下载链接
+          ROOTFS_DOWNLOAD_URL="https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}/releases/download/${{ env.RELEASE_TAG }}/${ROOTFS_ZIP_NAME}"
+          
+          echo "rootfs_zip_name=$ROOTFS_ZIP_NAME" >> $GITHUB_OUTPUT
+          echo "rootfs_tar_name=$ROOTFS_TAR_NAME" >> $GITHUB_OUTPUT
+          echo "rootfs_download_url=$ROOTFS_DOWNLOAD_URL" >> $GITHUB_OUTPUT
 
-      - name: Install dependencies
+      - name: Install GitHub CLI (if missing)
+        run: |
+          if ! command -v gh &> /dev/null; then
+            sudo apt update && sudo apt install -y gh
+          fi
+          # 验证 gh 版本
+          gh --version
+
+      - name: Authenticate GitHub CLI (用于检查 Release 资产)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Check if rootfs zip exists in remote Release
+        id: check_remote_rootfs
+        run: |
+          # 检查指定 Release 中是否存在目标 zip 包
+          gh release view ${{ env.RELEASE_TAG }} \
+            --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
+            --json assets \
+            --jq ".assets[] | select(.name == \"${{ steps.vars.outputs.rootfs_zip_name }}\") | .name" > /tmp/asset_check.txt
+          
+          if [ -s /tmp/asset_check.txt ]; then
+            echo "✅ Found remote rootfs zip: ${{ steps.vars.outputs.rootfs_zip_name }}"
+            echo "remote_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Remote rootfs zip not found: ${{ steps.vars.outputs.rootfs_zip_name }}"
+            echo "remote_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download remote rootfs zip (if exists)
+        if: steps.check_remote_rootfs.outputs.remote_exists == 'true'
+        run: |
+          # 创建 build 目录（确保目录存在）
+          mkdir -p ${{ github.workspace }}/build
+          # 下载远程 zip 包到 build 目录
+          wget -O ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }} ${{ steps.vars.outputs.rootfs_download_url }}
+          # 验证下载文件
+          ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }}
+          # 解压 zip 包（提取里面的 tar.xz 文件）
+          unzip -o ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }} -d ${{ github.workspace }}/build/
+          # 验证解压后的 tar.xz 文件
+          ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
+
+      - name: Install dependencies (only if remote rootfs not found)
+        if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
           sudo apt-get update && sudo apt-get upgrade -y
@@ -88,31 +148,25 @@ jobs:
           python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
           python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools
       
-      - name: Add execute permission to all shell scripts
+      - name: Add execute permission to scripts (only if remote rootfs not found)
+        if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         run: |
-          # 给主脚本和子脚本批量加执行权限
           chmod +x ./build.sh
           chmod +x ./scripts/*.sh
-          # 验证权限
           ls -la ./build.sh
           ls -la ./scripts/build-rootfs.sh
 
-      - name: Build rootfs
+      - name: Build rootfs (only if remote rootfs not found)
+        if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
-          # 使用绝对路径执行，避免工作目录问题
           sudo $GITHUB_WORKSPACE/build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only --launchpad
 
-      - name: Debug - Check rootfs file generation
+      - name: Debug - Check rootfs file
         run: |
-          # 列出build目录下的所有文件，确认rootfs文件是否生成
-          echo "=== Build directory contents ==="
-          ls -la $GITHUB_WORKSPACE/build/
-          # 检查目标文件是否存在
-          TARGET_FILE="$GITHUB_WORKSPACE/build/ubuntu-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-arm64.rootfs.tar.xz"
+          TARGET_FILE="${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}"
           if [ -f "$TARGET_FILE" ]; then
             echo "✅ Rootfs file exists: $TARGET_FILE"
-            # 打印文件大小，确认文件完整
             du -h "$TARGET_FILE"
           else
             echo "❌ Rootfs file not found: $TARGET_FILE"
@@ -122,9 +176,8 @@ jobs:
       - name: Upload rootfs artifact
         uses: actions/upload-artifact@v4.3.3
         with:
-            name: ubuntu-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-arm64-rootfs
-            # 使用绝对路径，避免相对路径失效
-            path: ${{ github.workspace }}/build/ubuntu-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-arm64.rootfs.tar.xz
+            name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs
+            path: ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
             if-no-files-found: error
             compression-level: 6
             overwrite: false
@@ -159,14 +212,12 @@ jobs:
         id: vars
         run: |
           source config/suites/${{ matrix.suite }}.sh
-          # 修复变量名拼写错误
           echo "suite_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
 
       - name: Checkout rootfs
         uses: actions/download-artifact@v4.1.2
         with:
-            name: ubuntu-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-arm64-rootfs
-            # 下载到绝对路径的build目录
+            name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs
             path: ${{ github.workspace }}/build/
 
       - name: Debug - Check downloaded rootfs
@@ -185,19 +236,14 @@ jobs:
           python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
           python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools
 
-      - name: Add execute permission to all shell scripts
+      - name: Add execute permission to build.sh
         run: |
-          # 给主脚本和子脚本批量加执行权限
           chmod +x ./build.sh
-          chmod +x ./scripts/*.sh
-          # 验证权限
           ls -la ./build.sh
-          ls -la ./scripts/build-rootfs.sh
 
       - name: Build image
         shell: bash
         run: |
-          # 使用绝对路径执行，避免sudo切换用户后路径异常
           sudo $GITHUB_WORKSPACE/build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --launchpad
 
       - name: Debug - Check image file generation
@@ -208,9 +254,8 @@ jobs:
       - name: Upload image artifact
         uses: actions/upload-artifact@v4.3.3
         with:
-          name: ubuntu-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-arm64-${{ matrix.board }}
-          # 使用绝对路径匹配镜像文件
-          path: ${{ github.workspace }}/images/ubuntu-*-preinstalled-${{ matrix.flavor }}-arm64-${{ matrix.board }}.*
+          name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}
+          path: ${{ github.workspace }}/images/${{ env.ROOTFS_FILE_PREFIX }}-*-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}.*
           if-no-files-found: error
           compression-level: 6
           overwrite: false
