@@ -33,6 +33,10 @@ function config_image_hook__orangepi-5-max() {
         # Install the rockchip camera engine
         chroot "${rootfs}" apt-get -y install camera-engine-rkaiq-rk3588
         fi
+
+        # Add old package for test
+        chroot "${rootfs}" add-apt-repository -y ppa:jjriek/rockchip
+        chroot "${rootfs}" apt-get update
         
         # Install BCMDHD SDIO WiFi and Bluetooth DKMS
         chroot "${rootfs}" apt-get -y install dkms bcmdhd-sdio-dkms
