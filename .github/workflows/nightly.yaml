@@ -5,13 +5,12 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch:
 
-# 全局环境变量（抽离链接中的固定部分）
 env:
-  REPO_OWNER: xiaoyi1972          # 仓库所有者
-  REPO_NAME: ubuntu-rockchip      # 仓库名称
-  RELEASE_TAG: workflow           # Release 标签
-  ROOTFS_FILE_PREFIX: ubuntu      # rootfs 文件前缀
-  ROOTFS_ARCH: arm64              # 架构
+  REPO_OWNER: xiaoyi1972
+  REPO_NAME: ubuntu-rockchip
+  RELEASE_TAG: workflow
+  ROOTFS_FILE_PREFIX: ubuntu
+  ROOTFS_ARCH: arm64
 
 jobs:
   config:
@@ -83,13 +82,9 @@ jobs:
         run: |
           source config/suites/${{ matrix.suite }}.sh
           echo "suite_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
-          # 拼接目标 rootfs 文件名（zip 包）
           ROOTFS_ZIP_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs.zip"
-          # 拼接目标 rootfs 解压后的文件名（tar.xz）
           ROOTFS_TAR_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}.rootfs.tar.xz"
-          # 拼接远程下载链接
           ROOTFS_DOWNLOAD_URL="https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}/releases/download/${{ env.RELEASE_TAG }}/${ROOTFS_ZIP_NAME}"
-          
           echo "rootfs_zip_name=$ROOTFS_ZIP_NAME" >> $GITHUB_OUTPUT
           echo "rootfs_tar_name=$ROOTFS_TAR_NAME" >> $GITHUB_OUTPUT
           echo "rootfs_download_url=$ROOTFS_DOWNLOAD_URL" >> $GITHUB_OUTPUT
@@ -99,7 +94,6 @@ jobs:
           if ! command -v gh &> /dev/null; then
             sudo apt update && sudo apt install -y gh
           fi
-          # 验证 gh 版本
           gh --version
 
       - name: Authenticate GitHub CLI (用于检查 Release 资产)
@@ -108,7 +102,6 @@ jobs:
       - name: Check if rootfs zip exists in remote Release
         id: check_remote_rootfs
         run: |
-          # 检查指定 Release 中是否存在目标 zip 包
           gh release view ${{ env.RELEASE_TAG }} \
             --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
             --json assets \
@@ -125,15 +118,10 @@ jobs:
       - name: Download remote rootfs zip (if exists)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'true'
         run: |
-          # 创建 build 目录（确保目录存在）
           mkdir -p ${{ github.workspace }}/build
-          # 下载远程 zip 包到 build 目录
           wget -O ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }} ${{ steps.vars.outputs.rootfs_download_url }}
-          # 验证下载文件
           ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }}
-          # 解压 zip 包（提取里面的 tar.xz 文件）
           unzip -o ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }} -d ${{ github.workspace }}/build/
-          # 验证解压后的 tar.xz 文件
           ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
 
       - name: Install dependencies (only if remote rootfs not found)
@@ -160,7 +148,6 @@ jobs:
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
-          # sudo $GITHUB_WORKSPACE/build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only --launchpad
           sudo $GITHUB_WORKSPACE/build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only
 
       - name: Debug - Check rootfs file
@@ -215,38 +202,81 @@ jobs:
           source config/suites/${{ matrix.suite }}.sh
           echo "suite_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Checkout rootfs
-        uses: actions/download-artifact@v4.1.2
-        with:
-            name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs
-            path: ${{ github.workspace }}/build/
-
-      - name: Debug - Check downloaded rootfs
+      - name: Set DEB Asset Name
+        id: deb-asset
         run: |
-          echo "=== Downloaded rootfs files ==="
-          ls -la ${{ github.workspace }}/build/
+          DEB_ZIP_NAME="deb-packages-${{ matrix.board }}-${{ matrix.suite }}.zip"
+          DEB_DOWNLOAD_URL="https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}/releases/download/${{ env.RELEASE_TAG }}/${DEB_ZIP_NAME}"
+          echo "deb_zip_name=$DEB_ZIP_NAME" >> $GITHUB_OUTPUT
+          echo "deb_download_url=$DEB_DOWNLOAD_URL" >> $GITHUB_OUTPUT
 
-      - name: Install dependencies
-        shell: bash
+      - name: Install GitHub CLI (if missing)
         run: |
-          sudo apt-get update && sudo apt-get upgrade -y
-          sudo apt-get install -y build-essential gcc-aarch64-linux-gnu bison \
-          qemu-user-static qemu-system-arm qemu-efi u-boot-tools binfmt-support \
-          debootstrap flex libssl-dev bc rsync kmod cpio xz-utils fakeroot parted \
-          udev dosfstools uuid-runtime git-lfs device-tree-compiler python2 python3 \
-          python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
-          python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools
+          if ! command -v gh &> /dev/null; then
+            sudo apt update && sudo apt install -y gh
+          fi
+          gh --version
 
-      - name: Add execute permission to build.sh
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Check if DEB ZIP exists in remote Release
+        id: check_remote_deb
         run: |
-          chmod +x ./build.sh
-          ls -la ./build.sh
+          gh release view ${{ env.RELEASE_TAG }} \
+            --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
+            --json assets \
+            --jq ".assets[] | select(.name == \"${{ steps.deb-asset.outputs.deb_zip_name }}\") | .name" > /tmp/deb_asset_check.txt
+          if [ -s /tmp/deb_asset_check.txt ]; then
+            echo "✅ Found remote deb zip: ${{ steps.deb-asset.outputs.deb_zip_name }}"
+            echo "deb_remote_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Remote deb zip not found: ${{ steps.deb-asset.outputs.deb_zip_name }}"
+            echo "deb_remote_exists=false" >> $GITHUB_OUTPUT
+          fi
 
+      - name: Download remote DEB zip (if exists)
+        if: steps.check_remote_deb.outputs.deb_remote_exists == 'true'
+        run: |
+          mkdir -p ${{ github.workspace }}/build
+          wget -O ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }} ${{ steps.deb-asset.outputs.deb_download_url }}
+          ls -la ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }}
+          unzip -o ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }} -d ${{ github.workspace }}/build/
+          ls -la ${{ github.workspace }}/build/*.deb
+
+      # 如果没有deb zip,才编译并上传
       - name: Build image
+        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
         shell: bash
         run: |
-          # sudo $GITHUB_WORKSPACE/build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --launchpad
           sudo $GITHUB_WORKSPACE/build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }}
+
+      - name: Upload DEB packages (artifact)
+        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: deb-packages-${{ matrix.board }}-${{ matrix.suite }}
+          path: ${{ github.workspace }}/build/*.deb
+          if-no-files-found: warn
+
+      - name: Make deb-packages zip
+        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
+        run: |
+          set -e
+          mkdir -p ${{ github.workspace }}/releases
+          cd ${{ github.workspace }}/build
+          zip ${{ github.workspace }}/releases/deb-packages-${{ matrix.board }}-${{ matrix.suite }}.zip ./*.deb
+          ls -lh ${{ github.workspace }}/releases/
+
+      - name: Upload deb-packages zip to Release
+        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true' && env.GITHUB_TOKEN != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ env.RELEASE_TAG }} \
+            ${{ github.workspace }}/releases/deb-packages-${{ matrix.board }}-${{ matrix.suite }}.zip \
+            --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
+            --clobber
 
       - name: Debug - Check image file generation
         run: |
