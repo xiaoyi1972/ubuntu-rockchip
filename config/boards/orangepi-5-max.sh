@@ -10,7 +10,15 @@ export UBOOT_RULES_TARGET="orangepi-5-max-rk3588"
 export COMPATIBLE_SUITES=("plucky")
 export COMPATIBLE_FLAVORS=("server" "desktop")
 
-function config_image_hook__orangepi-5-max() {
+function config_image_hook__orangepi-5-max_other() {
+    local rootfs="$1"
+    local overlay="$2"
+    local suite="$3"
+    return 0
+}
+
+
+function old_config_image_hook__orangepi-5-max_other() {
     local rootfs="$1"
     local overlay="$2"
     local suite="$3"
