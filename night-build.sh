@@ -53,9 +53,9 @@ log "已创建工作目录：ARTIFACT_DIR=${ARTIFACT_DIR}, BUILD_DIR=${BUILD_DIR
 # ===================== 步骤2：清理磁盘空间（WSL2 适配）=====================
 log "===== 【步骤2/10】清理磁盘空间 ====="
 # 清理系统冗余包和缓存
-sudo apt-get autoremove -y --purge
-sudo apt-get clean -y
-sudo rm -rf /var/cache/apt/* /var/lib/apt/lists/*
+sudo apt-get autoremove -y --purge || log "::warning:: apt-get autoremove 失败，继续执行"
+sudo apt-get clean -y || log "::warning:: apt-get clean 失败，继续执行"
+sudo rm -rf /var/cache/apt/* /var/lib/apt/lists/* || log "::warning:: 删除 apt 缓存失败，继续执行"
 # 清理 swap（可选，释放磁盘）
 sudo swapoff -a || log "swap 清理失败，忽略"
 sudo rm -rf /swapfile || log "swap 文件不存在，忽略"

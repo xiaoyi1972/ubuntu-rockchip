@@ -19,6 +19,25 @@ fi
 # shellcheck source=/dev/null
 source "../config/suites/${SUITE}.sh"
 
+# Ensure build dependencies are present
+apt-get update
+DEPS=(
+    debhelper
+    fakeroot
+    build-essential
+    dpkg-dev
+    devscripts
+    bc
+    bison
+    flex
+    libssl-dev
+    libncurses-dev
+    libelf-dev
+    dwarves
+    gcc-aarch64-linux-gnu
+)
+apt-get install -y "${DEPS[@]}"
+
 # Clone the kernel repo
 if ! git -C linux-rockchip pull; then
     git clone --progress -b "${KERNEL_BRANCH}" "${KERNEL_REPO}" linux-rockchip --depth=2
