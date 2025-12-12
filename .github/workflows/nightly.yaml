@@ -134,8 +134,9 @@ jobs:
           debootstrap flex libssl-dev bc rsync kmod cpio xz-utils fakeroot parted \
           udev dosfstools uuid-runtime git-lfs device-tree-compiler python2 python3 \
           python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
-          python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools
-      
+          python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools \
+          dtc
+
       - name: Add execute permission to scripts (only if remote rootfs not found)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         run: |
@@ -245,6 +246,12 @@ jobs:
           ls -la ${{ github.workspace }}/build/*.deb
 
       # 如果没有deb zip,才编译并上传
+      - name: Install required build dependencies
+        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y build-essential device-tree-compiler dtc u-boot-tools
+
       - name: Build image
         if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
         shell: bash
