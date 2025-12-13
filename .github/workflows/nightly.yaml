@@ -256,7 +256,11 @@ jobs:
         if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
         shell: bash
         run: |
-          sudo $GITHUB_WORKSPACE/build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} || true
+          set +e
+          sudo $GITHUB_WORKSPACE/build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }}
+          # 只在此处捕获编译DTS失败，但不中断Job
+          true
+        continue-on-error: true
 
       - name: Upload DEB packages (artifact)
         if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
