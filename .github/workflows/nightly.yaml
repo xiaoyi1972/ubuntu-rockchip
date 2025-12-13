@@ -148,6 +148,8 @@ jobs:
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
+          # ==== 关键修复: 构建前确保目录存在 ====
+          mkdir -p chroot/etc/default rootfs/dev
           sudo $GITHUB_WORKSPACE/build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only
 
       - name: Debug - Check rootfs file
