@@ -11,11 +11,12 @@ env:
   RELEASE_TAG: workflow
   ROOTFS_FILE_PREFIX: ubuntu
   ROOTFS_ARCH: arm64
+  BUILD_TIMEOUT: 180m
 
 jobs:
   config:
     runs-on: ubuntu-22.04
-    name: Create martrix
+    name: Create matrix
     outputs:
       build_matrix: ${{ steps.build.outputs.build_matrix }}
       rootfs_matrix: ${{ steps.rootfs.outputs.rootfs_matrix }}
@@ -30,15 +31,18 @@ jobs:
             for file in config/boards/*; do
                 COMPATIBLE_SUITES=()
                 COMPATIBLE_FLAVORS=()
-                # shellcheck disable=SC1090
-                source "${file}"
+                source "${file}" || { echo "Error loading ${file}"; exit 1; }
                 for suite in "${COMPATIBLE_SUITES[@]}"; do
                     for flavor in "${COMPATIBLE_FLAVORS[@]}"; do
                     build_matrix+="{\"board\":\"$(basename "${file%.sh}")\",\"suite\":\"${suite}\",\"flavor\":\"${flavor}\"},"
                     done
                 done
             done
-            echo "build_matrix={\"include\":[${build_matrix::-1}]}" >> $GITHUB_OUTPUT
+            if [ -z "$build_matrix" ]; then
+              echo "build_matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            else
+              echo "build_matrix={\"include\":[${build_matrix::-1}]}" >> $GITHUB_OUTPUT
+            fi
 
       - name: Create rootfs matrix
         id: rootfs
@@ -49,14 +53,20 @@ jobs:
                     rootfs_matrix+="{\"suite\":\"$(basename "${suite%.sh}")\",\"flavor\":\"$(basename "${flavor%.sh}")\"},"
                 done
             done
-            echo "rootfs_matrix={\"include\":[${rootfs_matrix::-1}]}" >> $GITHUB_OUTPUT
+            if [ -z "$rootfs_matrix" ]; then
+              echo "rootfs_matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            else
+              echo "rootfs_matrix={\"include\":[${rootfs_matrix::-1}]}" >> $GITHUB_OUTPUT
+            fi
 
   rootfs:
     runs-on: ubuntu-22.04
-    name: Build rootfs 
+    name: Build rootfs (${{ matrix.suite }}-${{ matrix.flavor }})
     needs: [config]
     strategy:
         matrix: ${{ fromJson(needs.config.outputs.rootfs_matrix) }}
+        fail-fast: false
+    timeout-minutes: ${{ env.BUILD_TIMEOUT }}
     steps:
       - name: Get more disk space
         uses: jlumbroso/free-disk-space@main
@@ -71,16 +81,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Debug - Check current directory and files
+      - name: Debug - Env & Directory
         run: |
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo "Matrix: suite=${{ matrix.suite }}, flavor=${{ matrix.flavor }}"
           pwd
           ls -la
           ls -la config/suites/
+          df -h
 
       - name: Set environment variables
         id: vars
         run: |
-          source config/suites/${{ matrix.suite }}.sh
+          source config/suites/${{ matrix.suite }}.sh || { echo "Error loading suite config"; exit 1; }
           echo "suite_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
           ROOTFS_ZIP_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs.zip"
           ROOTFS_TAR_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}.rootfs.tar.xz"
@@ -96,22 +109,27 @@ jobs:
           fi
           gh --version
 
-      - name: Authenticate GitHub CLI (用于检查 Release 资产)
+      - name: Authenticate GitHub CLI
         run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
       - name: Check if rootfs zip exists in remote Release
         id: check_remote_rootfs
+        continue-on-error: true
         run: |
-          gh release view ${{ env.RELEASE_TAG }} \
-            --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
-            --json assets \
-            --jq ".assets[] | select(.name == \"${{ steps.vars.outputs.rootfs_zip_name }}\") | .name" > /tmp/asset_check.txt
+          if gh release view ${{ env.RELEASE_TAG }} --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}; then
+            gh release view ${{ env.RELEASE_TAG }} \
+              --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
+              --json assets \
+              --jq ".assets[] | select(.name == \"${{ steps.vars.outputs.rootfs_zip_name }}\") | .name" > /tmp/asset_check.txt
+          else
+            echo "Release ${{ env.RELEASE_TAG }} not found" > /tmp/asset_check.txt
+          fi
 
-          if [ -s /tmp/asset_check.txt ]; then
-            echo "✅ Found remote rootfs zip: ${{ steps.vars.outputs.rootfs_zip_name }}"
+          if [ -s /tmp/asset_check.txt ] && ! grep -q "not found" /tmp/asset_check.txt; then
+            echo "✅ Found remote rootfs zip"
             echo "remote_exists=true" >> $GITHUB_OUTPUT
           else
-            echo "❌ Remote rootfs zip not found: ${{ steps.vars.outputs.rootfs_zip_name }}"
+            echo "❌ Remote rootfs zip not found or release missing"
             echo "remote_exists=false" >> $GITHUB_OUTPUT
           fi
 
@@ -122,19 +140,26 @@ jobs:
           wget -O ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }} ${{ steps.vars.outputs.rootfs_download_url }}
           ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }}
           unzip -o ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }} -d ${{ github.workspace }}/build/
-          ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
+          ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }} || { echo "Unzip failed"; exit 1; }
 
-      - name: Install dependencies (only if remote rootfs not found)
+      - name: Install full build dependencies (only if remote rootfs not found)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
           sudo apt-get update && sudo apt-get upgrade -y
-          sudo apt-get install -y build-essential gcc-aarch64-linux-gnu bison \
-          qemu-user-static qemu-system-arm qemu-efi u-boot-tools binfmt-support \
-          debootstrap flex libssl-dev bc rsync kmod cpio xz-utils fakeroot parted \
-          udev dosfstools uuid-runtime git-lfs device-tree-compiler python2 python3 \
-          python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
-          python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools
+          sudo apt-get install -y \
+            build-essential gcc-aarch64-linux-gnu bison \
+            qemu-user-static qemu-system-arm qemu-efi u-boot-tools binfmt-support \
+            debootstrap flex libssl-dev bc rsync kmod cpio xz-utils fakeroot parted \
+            udev dosfstools uuid-runtime git-lfs device-tree-compiler python2 python3 \
+            python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
+            python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools \
+            opencl-c-headers ocl-icd-opencl-dev dmraid libgpgme11-dev \
+            live-build ubuntu-keyring
+
+          sudo update-binfmts --enable qemu-aarch64
+          ls /usr/bin/qemu-aarch64-static
+          update-binfmts --display qemu-aarch64
 
       - name: Add execute permission to scripts (only if remote rootfs not found)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
@@ -144,18 +169,29 @@ jobs:
           ls -la ./build.sh
           ls -la ./scripts/build-rootfs.sh
 
-      - name: Ensure chroot and rootfs directory exists (only if remote rootfs not found)
+      - name: Create correct chroot/rootfs directories (only if remote rootfs not found)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
-          mkdir -p chroot/etc/default
-          mkdir -p rootfs/dev
+          mkdir -p ${{ github.workspace }}/build/chroot/etc/default
+          mkdir -p ${{ github.workspace }}/build/rootfs/dev
+          sudo chmod 777 -R ${{ github.workspace }}/build/chroot
+          sudo chmod 777 -R ${{ github.workspace }}/build/rootfs
+          ls -la ${{ github.workspace }}/build/
 
       - name: Build rootfs (only if remote rootfs not found)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
-          sudo $GITHUB_WORKSPACE/build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only
+          cd ${{ github.workspace }}
+          sudo bash -x ./build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only 2>&1 | tee build-rootfs.log
+
+      - name: Save build log (debug)
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: rootfs-build-log-${{ matrix.suite }}-${{ matrix.flavor }}
+          path: ${{ github.workspace }}/build-rootfs.log
+          if-no-files-found: warn
 
       - name: Debug - Check rootfs file
         run: |
@@ -165,6 +201,7 @@ jobs:
             du -h "$TARGET_FILE"
           else
             echo "❌ Rootfs file not found: $TARGET_FILE"
+            ls -la ${{ github.workspace }}/build/
             exit 1
           fi
 
@@ -179,10 +216,12 @@ jobs:
 
   build:
     runs-on: ubuntu-22.04
+    name: Build image (${{ matrix.board }}-${{ matrix.suite }}-${{ matrix.flavor }})
     needs: [rootfs, config]
-    name: Build image 
     strategy:
         matrix: ${{ fromJson(needs.config.outputs.build_matrix) }}
+        fail-fast: false
+    timeout-minutes: ${{ env.BUILD_TIMEOUT }}
     steps:
       - name: Get more disk space
         uses: jlumbroso/free-disk-space@main
@@ -197,16 +236,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Debug - Check current directory and files
+      - name: Debug - Env & Directory
         run: |
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo "Matrix: board=${{ matrix.board }}, suite=${{ matrix.suite }}, flavor=${{ matrix.flavor }}"
           pwd
           ls -la
           ls -la config/boards/
+          df -h
 
       - name: Set environment variables
         id: vars
         run: |
-          source config/suites/${{ matrix.suite }}.sh
+          source config/suites/${{ matrix.suite }}.sh || { echo "Error loading suite config"; exit 1; }
           echo "suite_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
 
       - name: Set DEB Asset Name
@@ -229,16 +271,22 @@ jobs:
 
       - name: Check if DEB ZIP exists in remote Release
         id: check_remote_deb
+        continue-on-error: true
         run: |
-          gh release view ${{ env.RELEASE_TAG }} \
-            --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
-            --json assets \
-            --jq ".assets[] | select(.name == \"${{ steps.deb-asset.outputs.deb_zip_name }}\") | .name" > /tmp/deb_asset_check.txt
-          if [ -s /tmp/deb_asset_check.txt ]; then
-            echo "✅ Found remote deb zip: ${{ steps.deb-asset.outputs.deb_zip_name }}"
+          if gh release view ${{ env.RELEASE_TAG }} --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}; then
+            gh release view ${{ env.RELEASE_TAG }} \
+              --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
+              --json assets \
+              --jq ".assets[] | select(.name == \"${{ steps.deb-asset.outputs.deb_zip_name }}\") | .name" > /tmp/deb_asset_check.txt
+          else
+            echo "Release ${{ env.RELEASE_TAG }} not found" > /tmp/deb_asset_check.txt
+          fi
+
+          if [ -s /tmp/deb_asset_check.txt ] && ! grep -q "not found" /tmp/deb_asset_check.txt; then
+            echo "✅ Found remote deb zip"
             echo "deb_remote_exists=true" >> $GITHUB_OUTPUT
           else
-            echo "❌ Remote deb zip not found: ${{ steps.deb-asset.outputs.deb_zip_name }}"
+            echo "❌ Remote deb zip not found or release missing"
             echo "deb_remote_exists=false" >> $GITHUB_OUTPUT
           fi
 
@@ -249,45 +297,55 @@ jobs:
           wget -O ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }} ${{ steps.deb-asset.outputs.deb_download_url }}
           ls -la ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }}
           unzip -o ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }} -d ${{ github.workspace }}/build/
-          ls -la ${{ github.workspace }}/build/*.deb
+          ls -la ${{ github.workspace }}/build/*.deb || { echo "Unzip failed"; exit 1; }
 
-      - name: Install required build dependencies
-        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
+      - name: Install full build dependencies
         shell: bash
         run: |
-          sudo apt-get update && sudo apt-get install -y build-essential device-tree-compiler u-boot-tools
+          sudo apt-get update && sudo apt-get upgrade -y
+          sudo apt-get install -y \
+            build-essential device-tree-compiler u-boot-tools \
+            qemu-user-static binfmt-support debootstrap \
+            fdisk parted dosfstools uuid-runtime rsync kmod
 
-      - name: Ensure workspace/chroot/rootfs/images/build directory exists
+      - name: Create correct directories
         shell: bash
         run: |
           mkdir -p ${{ github.workspace }}/images
           mkdir -p ${{ github.workspace }}/build
-          mkdir -p chroot/etc/default         # 保证chroot相关目录存在
-          mkdir -p rootfs/dev                 # 保证rootfs相关目录存在
+          mkdir -p ${{ github.workspace }}/build/chroot/etc/default
+          mkdir -p ${{ github.workspace }}/build/rootfs/dev
+          sudo chmod 777 -R ${{ github.workspace }}/build/chroot
+          sudo chmod 777 -R ${{ github.workspace }}/build/rootfs
+          ls -la ${{ github.workspace }}/build/
 
-      - name: Build image 并忽略DTS相关错误
+      - name: Build image (保留错误输出，不掩盖问题)
         shell: bash
         run: |
-          set +e
-          sudo $GITHUB_WORKSPACE/build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }}
-          true
-        continue-on-error: true
+          cd ${{ github.workspace }}
+          sudo bash -x ./build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} 2>&1 | tee build-image.log
 
-      - name: Ensure images directory exists (pre-upload/debug)
-        shell: bash
-        run: |
-          mkdir -p ${{ github.workspace }}/images
+      - name: Save build log (debug)
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: image-build-log-${{ matrix.board }}-${{ matrix.suite }}-${{ matrix.flavor }}
+          path: ${{ github.workspace }}/build-image.log
+          if-no-files-found: warn
 
       - name: Debug - Check image file generation
         run: |
           echo "=== Images directory contents ==="
-          ls -la ${{ github.workspace }}/images/
+          ls -la ${{ github.workspace }}/images/ || echo "Images directory not found"
+          ls -la ${{ github.workspace }}/build/
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4.3.3
         with:
           name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}
-          path: ${{ github.workspace }}/images/${{ env.ROOTFS_FILE_PREFIX }}-*-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}.*
+          path: |
+            ${{ github.workspace }}/images/${{ env.ROOTFS_FILE_PREFIX }}-*-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}.*
+            ${{ github.workspace }}/images/*.img
+            ${{ github.workspace }}/images/*.xz
           if-no-files-found: error
           compression-level: 6
           overwrite: false
