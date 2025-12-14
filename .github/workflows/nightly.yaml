@@ -106,7 +106,7 @@ jobs:
             --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
             --json assets \
             --jq ".assets[] | select(.name == \"${{ steps.vars.outputs.rootfs_zip_name }}\") | .name" > /tmp/asset_check.txt
-          
+
           if [ -s /tmp/asset_check.txt ]; then
             echo "✅ Found remote rootfs zip: ${{ steps.vars.outputs.rootfs_zip_name }}"
             echo "remote_exists=true" >> $GITHUB_OUTPUT
@@ -144,11 +144,17 @@ jobs:
           ls -la ./build.sh
           ls -la ./scripts/build-rootfs.sh
 
+      - name: Ensure chroot and rootfs directory exists (only if remote rootfs not found)
+        if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
+        shell: bash
+        run: |
+          mkdir -p chroot/etc/default
+          mkdir -p rootfs/dev
+
       - name: Build rootfs (only if remote rootfs not found)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
-          mkdir -p chroot/etc/default rootfs/dev
           sudo $GITHUB_WORKSPACE/build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only
 
       - name: Debug - Check rootfs file
@@ -251,7 +257,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y build-essential device-tree-compiler u-boot-tools
 
-      - name: Ensure images, build, chroot, and rootfs directories exist   # ← 新增和改进
+      - name: Ensure workspace/chroot/rootfs/images/build directory exists
         shell: bash
         run: |
           mkdir -p ${{ github.workspace }}/images
