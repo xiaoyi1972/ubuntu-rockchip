@@ -1,3 +1,4 @@
+name: Nightly Build
 run-name: Nightly build
 on:
   schedule:
