@@ -260,7 +260,7 @@ jobs:
           mkdir -p ${{ github.workspace }}/build
 
       - name: Build image 并忽略DTS相关错误
-        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
+        # if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
         shell: bash
         run: |
           set +e
