@@ -11,7 +11,6 @@ env:
   RELEASE_TAG: workflow
   ROOTFS_FILE_PREFIX: ubuntu
   ROOTFS_ARCH: arm64
-  BUILD_TIMEOUT: 180m
 
 jobs:
   config:
@@ -66,7 +65,8 @@ jobs:
     strategy:
         matrix: ${{ fromJson(needs.config.outputs.rootfs_matrix) }}
         fail-fast: false
-    timeout-minutes: ${{ env.BUILD_TIMEOUT }}
+    # 直接写数字，移除表达式引用
+    timeout-minutes: 180
     steps:
       - name: Get more disk space
         uses: jlumbroso/free-disk-space@main
@@ -221,7 +221,8 @@ jobs:
     strategy:
         matrix: ${{ fromJson(needs.config.outputs.build_matrix) }}
         fail-fast: false
-    timeout-minutes: ${{ env.BUILD_TIMEOUT }}
+    # 直接写数字，移除表达式引用
+    timeout-minutes: 180
     steps:
       - name: Get more disk space
         uses: jlumbroso/free-disk-space@main
