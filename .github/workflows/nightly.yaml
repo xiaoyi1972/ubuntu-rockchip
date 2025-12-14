@@ -42,7 +42,6 @@ jobs:
             else
               echo "build_matrix={\"include\":[${build_matrix::-1}]}" >> $GITHUB_OUTPUT
             fi
-
       - name: Create rootfs matrix
         id: rootfs
         run: |
@@ -65,7 +64,6 @@ jobs:
     strategy:
         matrix: ${{ fromJson(needs.config.outputs.rootfs_matrix) }}
         fail-fast: false
-    # 直接写数字，移除表达式引用
     timeout-minutes: 180
     steps:
       - name: Get more disk space
@@ -95,8 +93,9 @@ jobs:
         run: |
           source config/suites/${{ matrix.suite }}.sh || { echo "Error loading suite config"; exit 1; }
           echo "suite_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
-          ROOTFS_ZIP_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs.zip"
-          ROOTFS_TAR_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}.rootfs.tar.xz"
+          # 修正：匹配实际生成的 Rootfs 文件名格式（去掉 flavor）
+          ROOTFS_ZIP_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ env.ROOTFS_ARCH }}-rootfs.zip"
+          ROOTFS_TAR_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ env.ROOTFS_ARCH }}.rootfs.tar.xz"
           ROOTFS_DOWNLOAD_URL="https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}/releases/download/${{ env.RELEASE_TAG }}/${ROOTFS_ZIP_NAME}"
           echo "rootfs_zip_name=$ROOTFS_ZIP_NAME" >> $GITHUB_OUTPUT
           echo "rootfs_tar_name=$ROOTFS_TAR_NAME" >> $GITHUB_OUTPUT
@@ -124,7 +123,6 @@ jobs:
           else
             echo "Release ${{ env.RELEASE_TAG }} not found" > /tmp/asset_check.txt
           fi
-
           if [ -s /tmp/asset_check.txt ] && ! grep -q "not found" /tmp/asset_check.txt; then
             echo "✅ Found remote rootfs zip"
             echo "remote_exists=true" >> $GITHUB_OUTPUT
@@ -156,7 +154,6 @@ jobs:
             python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools \
             opencl-c-headers ocl-icd-opencl-dev dmraid libgpgme11-dev \
             live-build ubuntu-keyring
-
           sudo update-binfmts --enable qemu-aarch64
           ls /usr/bin/qemu-aarch64-static
           update-binfmts --display qemu-aarch64
@@ -205,10 +202,19 @@ jobs:
             exit 1
           fi
 
+      # 修正：缓存 Rootfs 产物（匹配实际文件路径，去掉 flavor）
+      - name: Cache Rootfs
+        uses: actions/cache@v3
+        with:
+          path: ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
+          key: rootfs-${{ matrix.suite }}-${{ matrix.flavor }}-${{ hashFiles('config/suites/*.sh', 'config/flavors/*.sh') }}
+          restore-keys: |
+            rootfs-${{ matrix.suite }}-${{ matrix.flavor }}-
+
       - name: Upload rootfs artifact
         uses: actions/upload-artifact@v4.3.3
         with:
-            name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs
+            name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ env.ROOTFS_ARCH }}-rootfs
             path: ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
             if-no-files-found: error
             compression-level: 6
@@ -221,7 +227,6 @@ jobs:
     strategy:
         matrix: ${{ fromJson(needs.config.outputs.build_matrix) }}
         fail-fast: false
-    # 直接写数字，移除表达式引用
     timeout-minutes: 180
     steps:
       - name: Get more disk space
@@ -282,7 +287,6 @@ jobs:
           else
             echo "Release ${{ env.RELEASE_TAG }} not found" > /tmp/deb_asset_check.txt
           fi
-
           if [ -s /tmp/deb_asset_check.txt ] && ! grep -q "not found" /tmp/deb_asset_check.txt; then
             echo "✅ Found remote deb zip"
             echo "deb_remote_exists=true" >> $GITHUB_OUTPUT
@@ -309,6 +313,18 @@ jobs:
             qemu-user-static binfmt-support debootstrap \
             fdisk parted dosfstools uuid-runtime rsync kmod
 
+      # 修正：Deb 缓存新增 zip 包路径，匹配日志中的 deb-packages-*.zip
+      - name: Cache Deb packages
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ github.workspace }}/build/*.deb
+            ${{ github.workspace }}/build/*.zip
+            /var/cache/apt/archives/*.deb
+          key: ${{ matrix.board }}-${{ matrix.suite }}-deb-cache-${{ hashFiles('config/boards/*.sh', 'config/suites/*.sh') }}
+          restore-keys: |
+            ${{ matrix.board }}-${{ matrix.suite }}-deb-cache-
+
       - name: Create correct directories
         shell: bash
         run: |
@@ -319,6 +335,24 @@ jobs:
           sudo chmod 777 -R ${{ github.workspace }}/build/chroot
           sudo chmod 777 -R ${{ github.workspace }}/build/rootfs
           ls -la ${{ github.workspace }}/build/
+
+      # 修正：恢复 Rootfs 缓存（匹配实际文件路径，去掉 flavor）
+      - name: Restore Rootfs Cache
+        uses: actions/cache/restore@v3
+        with:
+          path: ${{ github.workspace }}/build/${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ env.ROOTFS_ARCH }}.rootfs.tar.xz
+          key: rootfs-${{ matrix.suite }}-${{ matrix.flavor }}-${{ hashFiles('config/suites/*.sh', 'config/flavors/*.sh') }}
+
+      # 缓存内核编译产物（匹配日志中的内核文件路径）
+      - name: Cache Kernel Build
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ github.workspace }}/build/kernel
+            ${{ github.workspace }}/build/modules
+          key: kernel-${{ matrix.board }}-${{ matrix.suite }}-${{ hashFiles('config/boards/*.sh', 'scripts/build-kernel.sh') }}
+          restore-keys: |
+            kernel-${{ matrix.board }}-${{ matrix.suite }}-
 
       - name: Build image (保留错误输出，不掩盖问题)
         shell: bash
@@ -338,6 +372,15 @@ jobs:
           echo "=== Images directory contents ==="
           ls -la ${{ github.workspace }}/images/ || echo "Images directory not found"
           ls -la ${{ github.workspace }}/build/
+
+      # 新增：缓存已构建的镜像文件（可选，进一步减少重复构建）
+      - name: Cache Built Images
+        uses: actions/cache@v3
+        with:
+          path: ${{ github.workspace }}/images/*.img.xz
+          key: image-${{ matrix.board }}-${{ matrix.suite }}-${{ matrix.flavor }}-${{ hashFiles('config/boards/*.sh', 'config/suites/*.sh', 'config/flavors/*.sh') }}
+          restore-keys: |
+            image-${{ matrix.board }}-${{ matrix.suite }}-${{ matrix.flavor }}-
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4.3.3
