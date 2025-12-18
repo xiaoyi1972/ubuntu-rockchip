@@ -136,9 +136,7 @@ chroot $chroot_dir apt-get update
 chroot $chroot_dir apt-get -y upgrade
     
 # Run config hook to handle board specific changes
-echo "run config hook"
 if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
-    echo "enter config hook"
     config_image_hook__"${BOARD}" "${chroot_dir}" "${overlay_dir}" "${SUITE}"
 fi 
 
