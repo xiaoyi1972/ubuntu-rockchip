@@ -34,11 +34,31 @@ function config_image_hook__orangepi-5-max() {
         fi
 
         # Add old package for test
-        chroot "${rootfs}" add-apt-repository -y ppa:jjriek/rockchip
+        #chroot "${rootfs}" add-apt-repository -y ppa:jjriek/rockchip
         chroot "${rootfs}" apt-get update
 
         # Install BCMDHD SDIO WiFi and Bluetooth DKMS
-        chroot "${rootfs}" apt-get -y install dkms bcmdhd-sdio-dkms
+        #chroot "${rootfs}" apt-get -y install dkms bcmdhd-sdio-dkms
+        进入chroot环境前，确保rootfs有网络访问权限（若未配置，需先执行：cp /etc/resolv.conf ${rootfs}/etc/）
+        cp /etc/resolv.conf "${rootfs}/etc/"
+        # 2. chroot内安装构建依赖（必须先装，否则打包失败）
+        chroot "${rootfs}" apt-get update
+        chroot "${rootfs}" apt-get -y install git dkms build-essential debhelper dh-dkms linux-headers-$(uname -r)
+        # 3. 克隆GitHub仓库到chroot环境
+        chroot "${rootfs}" git clone https://github.com/Joshua-Riek/bcmdhd-dkms.git /tmp/bcmdhd-dkms
+        # 4. 进入仓库目录，构建deb包（利用debian文件夹自动打包）
+        chroot "${rootfs}" bash -c "cd /tmp/bcmdhd-dkms && dpkg-buildpackage -us -uc -b"
+        # 5. 安装生成的deb包（打包后deb文件在上级目录）
+        chroot "${rootfs}" dpkg -i /tmp/bcmdhd-dkms_*.deb
+        # 6. 修复可能的依赖缺失（若步骤5报错）
+        chroot "${rootfs}" apt-get -y -f install
+        # 7. 加载DKMS模块并设置开机自启
+        chroot "${rootfs}" dkms add -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
+        chroot "${rootfs}" dkms build -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
+        chroot "${rootfs}" dkms install -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
+        chroot "${rootfs}" dkms enable bcmdhd
+        echo "bcmdhd-dkms installed successfully via GitHub source"
+ 
         echo "install dkms"
 
         # Enable bluetooth
