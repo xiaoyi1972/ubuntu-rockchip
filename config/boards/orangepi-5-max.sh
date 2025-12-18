@@ -39,6 +39,7 @@ function config_image_hook__orangepi-5-max_other() {
 
         # Install BCMDHD SDIO WiFi and Bluetooth DKMS
         chroot "${rootfs}" apt-get -y install dkms bcmdhd-sdio-dkms
+        echo "install dkms"
 
         # Enable bluetooth
         cp "${overlay}/usr/bin/brcm_patchram_plus" "${rootfs}/usr/bin/brcm_patchram_plus"
