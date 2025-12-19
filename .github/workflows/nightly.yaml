@@ -354,6 +354,8 @@ jobs:
         run: |
           mkdir -p build/rootfs/tmp/
           cp build/linux-*.deb build/rootfs/tmp/
+          ls -la ${{ github.workspace }}/build/rootfs/tmp
+
           
       #- name: Install kernel headers and image by chroot (in rootfs)
       #  run: |
