@@ -355,9 +355,9 @@ jobs:
           mkdir -p build/rootfs/tmp/
           cp build/linux-*.deb build/rootfs/tmp/
           
-      - name: Install kernel headers and image by chroot (in rootfs)
-        run: |
-          sudo chroot build/rootfs dpkg -i /tmp/linux-*.deb || sudo chroot build/rootfs apt-get -fy install
+      #- name: Install kernel headers and image by chroot (in rootfs)
+      #  run: |
+      #    sudo chroot build/rootfs dpkg -i /tmp/linux-*.deb || sudo chroot build/rootfs apt-get -fy install
           
       - name: Build image
         shell: bash
