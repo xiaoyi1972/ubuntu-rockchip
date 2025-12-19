@@ -310,8 +310,9 @@ jobs:
           sudo apt-get install -y \
             build-essential device-tree-compiler u-boot-tools \
             qemu-user-static binfmt-support debootstrap \
-            fdisk parted dosfstools uuid-runtime rsync kmod
-
+            fdisk parted dosfstools uuid-runtime rsync kmod \
+            devscripts dh-exec lintiants dh-exec lintian
+            
       - name: Cache Deb packages
         uses: actions/cache@v3
         with:
