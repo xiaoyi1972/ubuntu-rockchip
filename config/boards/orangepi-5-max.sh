@@ -1,3 +1,4 @@
+
 # shellcheck shell=bash
 
 export BOARD_NAME="Orange Pi 5 Max"
@@ -25,10 +26,8 @@ function config_image_hook__orangepi-5-max() {
             chroot "${rootfs}" apt-get update
             chroot "${rootfs}" apt-get -y install mali-g610-firmware
             chroot "${rootfs}" apt-get -y dist-upgrade
-
             # Install libmali blobs alongside panfork
             chroot "${rootfs}" apt-get -y install libmali-g610-x11
-            
             # Install the rockchip camera engine
             chroot "${rootfs}" apt-get -y install camera-engine-rkaiq-rk3588
         fi
@@ -42,9 +41,19 @@ function config_image_hook__orangepi-5-max() {
         
         # 1. 进入chroot环境前，确保rootfs有网络访问权限（若未配置，需先执行：cp /etc/resolv.conf ${rootfs}/etc/）
         cp /etc/resolv.conf "${rootfs}/etc/"
-        # 2. chroot内安装构建依赖（必须先装，否则打包失败）
+        # 2. chroot内安装构建依赖（必须先装，否则打包失败，不再安装宿主云headers！）
         chroot "${rootfs}" apt-get update
-        chroot "${rootfs}" apt-get -y install git dkms build-essential debhelper dh-dkms linux-headers-$(uname -r)
+        chroot "${rootfs}" apt-get -y install git dkms build-essential debhelper dh-dkms
+
+        # 2.5 自动查找build目录最新的 linux-headers-*.deb 包并安装
+        linux_headers_package="$(find /home/runner/work/ubuntu-rockchip/ubuntu-rockchip/build -name 'linux-headers-*.deb' | sort | tail -n1)"
+        if [ -z "$linux_headers_package" ]; then
+            echo "Error: No linux-headers deb found in build directory!"
+            exit 1
+        fi
+        cp "$linux_headers_package" "${rootfs}/tmp/"
+        chroot "${rootfs}" dpkg -i "/tmp/$(basename "$linux_headers_package")" || chroot "${rootfs}" apt-get -y -f install
+
         # 3. 克隆GitHub仓库到chroot环境
         chroot "${rootfs}" git clone https://github.com/Joshua-Riek/bcmdhd-dkms.git /tmp/bcmdhd-dkms
         # 4. 进入仓库目录，构建deb包（利用debian文件夹自动打包）
@@ -73,8 +82,6 @@ function config_image_hook__orangepi-5-max() {
     fi
     return 0
 }
-
-
 function old_config_image_hook__orangepi-5-max_other() {
     local rootfs="$1"
     local overlay="$2"
