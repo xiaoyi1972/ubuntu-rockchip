@@ -313,20 +313,6 @@ jobs:
             fdisk parted dosfstools uuid-runtime rsync kmod \
             devscripts dh-exec lintian
 
-      # ---------- 关键新增步骤 BEGIN ----------
-      - name: Install required kernel headers
-        shell: bash
-        run: |
-          cd ${{ github.workspace }}/build
-          if [ -f linux-rockchip-headers-6.1.0-1027_6.1.0-1027.27_arm64.deb ]; then
-            sudo dpkg -i linux-rockchip-headers-6.1.0-1027_6.1.0-1027.27_arm64.deb
-          fi
-          if [ -f linux-headers-6.1.0-1027-rockchip_6.1.0-1027.27_arm64.deb ]; then
-            sudo dpkg -i linux-headers-6.1.0-1027-rockchip_6.1.0-1027.27_arm64.deb
-          fi
-          sudo apt-get -f install -y
-      # ---------- 关键新增步骤 END ----------
-
       - name: Cache Deb packages
         uses: actions/cache@v3
         with:
@@ -364,6 +350,15 @@ jobs:
           restore-keys: |
             kernel-${{ matrix.board }}-${{ matrix.suite }}-
 
+      - name: Copy all built kernel debs into rootfs tmp
+        run: |
+          mkdir -p build/rootfs/tmp/
+          cp build/linux-*.deb build/rootfs/tmp/
+          
+      - name: Install kernel headers and image by chroot (in rootfs)
+        run: |
+          sudo chroot build/rootfs dpkg -i /tmp/linux-*.deb || sudo chroot build/rootfs apt-get -fy install
+          
       - name: Build image
         shell: bash
         run: |
