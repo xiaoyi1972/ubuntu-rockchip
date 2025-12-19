@@ -39,7 +39,8 @@ function config_image_hook__orangepi-5-max() {
         # Install BCMDHD SDIO WiFi and Bluetooth DKMS
         # chroot "${rootfs}" apt-get -y install dkms bcmdhd-sdio-dkms
 
-        
+        #sudo apt-get update
+        sudo chroot "${rootfs}" apt-get install -y devscripts dh-exec lintian
         sudo chroot "${rootfs}" dpkg -i /tmp/linux-*.deb || sudo chroot "${rootfs}" apt-get -fy install
          
         # 1. 进入chroot环境前，确保rootfs有网络访问权限（若未配置，需先执行：cp /etc/resolv.conf ${rootfs}/etc/）
