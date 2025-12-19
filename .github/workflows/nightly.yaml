@@ -311,7 +311,7 @@ jobs:
             build-essential device-tree-compiler u-boot-tools \
             qemu-user-static binfmt-support debootstrap \
             fdisk parted dosfstools uuid-runtime rsync kmod \
-            devscripts dh-exec lintiants dh-exec lintian
+            devscripts dh-exec lintian dh-exec lintian
             
       - name: Cache Deb packages
         uses: actions/cache@v3
