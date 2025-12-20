@@ -24,39 +24,49 @@ function config_image_hook__orangepi-5-max() {
             chroot "${rootfs}" apt-get update
             chroot "${rootfs}" apt-get -y install mali-g610-firmware
             chroot "${rootfs}" apt-get -y dist-upgrade
-            # Install the libmali blobs alongside panfork
             chroot "${rootfs}" apt-get -y install libmali-g610-x11
-            # Install the rockchip camera engine
             chroot "${rootfs}" apt-get -y install camera-engine-rkaiq-rk3588
         fi
 
         chroot "${rootfs}" apt-get update
 
-        chroot "${rootfs}" apt-get install -y devscripts dh-exec lintian
+        # 安装必要的打包依赖
+        chroot "${rootfs}" apt-get install -y devscripts dh-exec lintian fakeroot dpkg-dev
 
-        # 1. 进入chroot环境前，确保rootfs有网络访问权限
+        # 确保chroot环境有网络
         cp /etc/resolv.conf "${rootfs}/etc/"
-        # 2. chroot内安装构建依赖
         chroot "${rootfs}" apt-get update
-        chroot "${rootfs}" apt-get -y install git dkms build-essential debhelper dh-dkms
+        chroot "${rootfs}" apt-get install -y git dkms build-essential debhelper dh-dkms
 
-        # 3. 克隆GitHub仓库到chroot环境
-        chroot "${rootfs}" git clone https://github.com/Joshua-Riek/bcmdhd-dkms.git /tmp/bcmdhd-dkms
+        # 克隆 bcmdhd-dkms 仓库
+        chroot "${rootfs}" bash -c "rm -rf /tmp/bcmdhd-dkms && git clone https://github.com/Joshua-Riek/bcmdhd-dkms.git /tmp/bcmdhd-dkms"
+        
+        # 检查仓库文件，增强日志
+        chroot "${rootfs}" bash -c "ls -lh /tmp/bcmdhd-dkms; cat /tmp/bcmdhd-dkms/debian/changelog || true"
 
-        # 4. 进入仓库目录，构建deb包
-        chroot "${rootfs}" bash -c "cd /tmp/bcmdhd-dkms && dpkg-buildpackage -us -uc -b"
+        # 构建deb包并保存日志
+        chroot "${rootfs}" bash -c 'cd /tmp/bcmdhd-dkms && dpkg-buildpackage -us -uc -b' > "${rootfs}/tmp/build_bcmdhd.log" 2>&1 || {
+            echo "Error: dpkg-buildpackage 失败，日志如下："
+            cat "${rootfs}/tmp/build_bcmdhd.log"
+            exit 1
+        }
 
-        # 5. 查找并安装生成的deb包，如果没有则立即中断
-        bcmdhd_dkms_deb=$(chroot "${rootfs}" bash -c "find /tmp -type f -name 'bcmdhd-dkms_*.deb' | head -n1")
+        # 列出 /tmp，便于确认产物
+        chroot "${rootfs}" bash -c "ls -lh /tmp/"
+
+        # 找到deb包并安装
+        bcmdhd_dkms_deb=$(chroot "${rootfs}" bash -c "find /tmp -maxdepth 1 -type f -name 'bcmdhd-dkms_*.deb' | head -n1")
         if [[ -n "$bcmdhd_dkms_deb" ]]; then
             chroot "${rootfs}" dpkg -i "$bcmdhd_dkms_deb" || chroot "${rootfs}" apt-get -y -f install
-            chroot "${rootfs}" dkms add -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
-            chroot "${rootfs}" dkms build -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
-            chroot "${rootfs}" dkms install -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
-            chroot "${rootfs}" dkms enable bcmdhd
+            bcmdhd_ver=$(chroot "${rootfs}" bash -c "cd /tmp/bcmdhd-dkms && dpkg-parsechangelog | grep '^Version:' | awk '{print \$2}'")
+            chroot "${rootfs}" dkms add -m bcmdhd -v "$bcmdhd_ver"
+            chroot "${rootfs}" dkms build -m bcmdhd -v "$bcmdhd_ver"
+            chroot "${rootfs}" dkms install -m bcmdhd -v "$bcmdhd_ver"
+            chroot "${rootfs}" dkms enable bcmdhd || true
             echo "bcmdhd-dkms installed successfully via GitHub source"
         else
-            echo "Error: bcmdhd-dkms deb 未生成, 中断构建流程"
+            echo "Error: bcmdhd-dkms deb 未生成, 日志如下："
+            cat "${rootfs}/tmp/build_bcmdhd.log"
             exit 1
         fi
 
