@@ -1,4 +1,3 @@
-
 # shellcheck shell=bash
 
 export BOARD_NAME="Orange Pi 5 Max"
@@ -7,7 +6,6 @@ export BOARD_SOC="Rockchip RK3588"
 export BOARD_CPU="ARM Cortex A76 / A55"
 export UBOOT_PACKAGE="u-boot-radxa-rk3588"
 export UBOOT_RULES_TARGET="orangepi-5-max-rk3588"
-#export COMPATIBLE_SUITES=("jammy" "noble" "oracular" "plucky")
 export COMPATIBLE_SUITES=("plucky")
 export COMPATIBLE_FLAVORS=("server" "desktop")
 
@@ -26,63 +24,42 @@ function config_image_hook__orangepi-5-max() {
             chroot "${rootfs}" apt-get update
             chroot "${rootfs}" apt-get -y install mali-g610-firmware
             chroot "${rootfs}" apt-get -y dist-upgrade
-            # Install libmali blobs alongside panfork
+            # Install the libmali blobs alongside panfork
             chroot "${rootfs}" apt-get -y install libmali-g610-x11
             # Install the rockchip camera engine
             chroot "${rootfs}" apt-get -y install camera-engine-rkaiq-rk3588
         fi
 
-        # Add old package for test
-        #chroot "${rootfs}" add-apt-repository -y ppa:jjriek/rockchip
         chroot "${rootfs}" apt-get update
 
-        # Install BCMDHD SDIO WiFi and Bluetooth DKMS
-        # chroot "${rootfs}" apt-get -y install dkms bcmdhd-sdio-dkms
-
-        #sudo apt-get update
         chroot "${rootfs}" apt-get install -y devscripts dh-exec lintian
-        # chroot "${rootfs}" dpkg -i /tmp/linux-*.deb || sudo chroot "${rootfs}" apt-get -fy install
-         
-        # 1. 进入chroot环境前，确保rootfs有网络访问权限（若未配置，需先执行：cp /etc/resolv.conf ${rootfs}/etc/）
+
+        # 1. 进入chroot环境前，确保rootfs有网络访问权限
         cp /etc/resolv.conf "${rootfs}/etc/"
-        # 2. chroot内安装构建依赖（必须先装，否则打包失败，不再安装宿主云headers！）
+        # 2. chroot内安装构建依赖
         chroot "${rootfs}" apt-get update
         chroot "${rootfs}" apt-get -y install git dkms build-essential debhelper dh-dkms
 
-        # 2.5 自动查找build目录最新的 linux-headers-*.deb 包并安装
-        # linux_headers_package="$(find /home/runner/work/ubuntu-rockchip/ubuntu-rockchip/build -name 'linux-headers-*.deb' | sort | tail -n1)"
-        # if [ -z "$linux_headers_package" ]; then
-            # echo "Error: No linux-headers deb found in build directory!"
-            # exit 1
-        # fi
-        # cp "$linux_headers_package" "${rootfs}/tmp/"
-        # 先安装 rockchip headers，解决依赖关系
-        # chroot "${rootfs}" dpkg -i /tmp/linux-rockchip-headers-*.deb
-
-        # 再安装 kernel headers、image、modules 等包
-        # chroot "${rootfs}" dpkg -i /tmp/linux-headers-*.deb
-        # chroot "${rootfs}" dpkg -i /tmp/linux-image-*.deb
-        # chroot "${rootfs}" dpkg -i /tmp/linux-modules-*.deb
-
-        # 最后安装补充依赖
-        # chroot "${rootfs}" apt-get -fy install
-        # chroot "${rootfs}" dpkg -i "/tmp/$(basename "$linux_headers_package")" || chroot "${rootfs}" apt-get -y -f install
-
         # 3. 克隆GitHub仓库到chroot环境
         chroot "${rootfs}" git clone https://github.com/Joshua-Riek/bcmdhd-dkms.git /tmp/bcmdhd-dkms
-        # 4. 进入仓库目录，构建deb包（利用debian文件夹自动打包）
+
+        # 4. 进入仓库目录，构建deb包
         chroot "${rootfs}" bash -c "cd /tmp/bcmdhd-dkms && dpkg-buildpackage -us -uc -b"
-        # 5. 安装生成的deb包（打包后deb文件在上级目录）
-        chroot "${rootfs}" dpkg -i /tmp/bcmdhd-dkms_*.deb
-        # 6. 修复可能的依赖缺失（若步骤5报错）
-        chroot "${rootfs}" apt-get -y -f install
-        # 7. 加载DKMS模块并设置开机自启
-        chroot "${rootfs}" dkms add -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
-        chroot "${rootfs}" dkms build -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
-        chroot "${rootfs}" dkms install -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
-        chroot "${rootfs}" dkms enable bcmdhd
-        echo "bcmdhd-dkms installed successfully via GitHub source"
- 
+
+        # 5. 查找并安装生成的deb包，如果没有则立即中断
+        bcmdhd_dkms_deb=$(chroot "${rootfs}" bash -c "find /tmp -maxdepth 1 -type f -name 'bcmdhd-dkms_*.deb' | head -n1")
+        if [[ -n "$bcmdhd_dkms_deb" ]]; then
+            chroot "${rootfs}" dpkg -i "$bcmdhd_dkms_deb" || chroot "${rootfs}" apt-get -y -f install
+            chroot "${rootfs}" dkms add -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
+            chroot "${rootfs}" dkms build -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
+            chroot "${rootfs}" dkms install -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
+            chroot "${rootfs}" dkms enable bcmdhd
+            echo "bcmdhd-dkms installed successfully via GitHub source"
+        else
+            echo "Error: bcmdhd-dkms deb 未生成, 中断构建流程"
+            exit 1
+        fi
+
         echo "install dkms"
 
         # Enable bluetooth
@@ -96,12 +73,13 @@ function config_image_hook__orangepi-5-max() {
     fi
     return 0
 }
+
 function old_config_image_hook__orangepi-5-max_other() {
     local rootfs="$1"
     local overlay="$2"
     local suite="$3"
 
-    if [ "${suite}" == "jammy" ] || [ "${suite}" == "noble" ] || [ "${suite}" == "oracular" ] || [ "${suite}" == "plucky" ]; then
+    if [ "${suite}" == "jammy" ] || [ "${suite}" == "noble" ] || [ "${suite}" == "oracular" ] || [ "${suite}== "plucky" ]; then
         # Kernel modules to blacklist
         echo "blacklist bcmdhd" > "${rootfs}/etc/modprobe.d/bcmdhd.conf"
         echo "blacklist dhd_static_buf" >> "${rootfs}/etc/modprobe.d/bcmdhd.conf"
@@ -115,7 +93,7 @@ function old_config_image_hook__orangepi-5-max_other() {
 
             # Install libmali blobs alongside panfork
             chroot "${rootfs}" apt-get -y install libmali-g610-x11
-            
+
             # Install the rockchip camera engine
             chroot "${rootfs}" apt-get -y install camera-engine-rkaiq-rk3588
         fi
@@ -129,7 +107,7 @@ function old_config_image_hook__orangepi-5-max_other() {
 
         # Enable bluetooth
         cp "${overlay}/usr/bin/brcm_patchram_plus" "${rootfs}/usr/bin/brcm_patchram_plus"
-        cp "${overlay}/usr/lib/systemd/system/ap6611s-bluetooth.service" "${rootfs}/usr/lib/systemd/system/ap6611s-bluetooth.service"
+        cp "${overlay}/usr/lib/systemd/
         chroot "${rootfs}" systemctl enable ap6611s-bluetooth
 
         # Install wiring orangepi package 
