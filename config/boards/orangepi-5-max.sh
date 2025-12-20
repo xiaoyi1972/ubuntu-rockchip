@@ -40,8 +40,8 @@ function config_image_hook__orangepi-5-max() {
         # chroot "${rootfs}" apt-get -y install dkms bcmdhd-sdio-dkms
 
         #sudo apt-get update
-        sudo chroot "${rootfs}" apt-get install -y devscripts dh-exec lintian
-        sudo chroot "${rootfs}" dpkg -i /tmp/linux-*.deb || sudo chroot "${rootfs}" apt-get -fy install
+        chroot "${rootfs}" apt-get install -y devscripts dh-exec lintian
+        # chroot "${rootfs}" dpkg -i /tmp/linux-*.deb || sudo chroot "${rootfs}" apt-get -fy install
          
         # 1. 进入chroot环境前，确保rootfs有网络访问权限（若未配置，需先执行：cp /etc/resolv.conf ${rootfs}/etc/）
         cp /etc/resolv.conf "${rootfs}/etc/"
@@ -50,22 +50,22 @@ function config_image_hook__orangepi-5-max() {
         chroot "${rootfs}" apt-get -y install git dkms build-essential debhelper dh-dkms
 
         # 2.5 自动查找build目录最新的 linux-headers-*.deb 包并安装
-        linux_headers_package="$(find /home/runner/work/ubuntu-rockchip/ubuntu-rockchip/build -name 'linux-headers-*.deb' | sort | tail -n1)"
-        if [ -z "$linux_headers_package" ]; then
-            echo "Error: No linux-headers deb found in build directory!"
-            exit 1
-        fi
-        cp "$linux_headers_package" "${rootfs}/tmp/"
+        # linux_headers_package="$(find /home/runner/work/ubuntu-rockchip/ubuntu-rockchip/build -name 'linux-headers-*.deb' | sort | tail -n1)"
+        # if [ -z "$linux_headers_package" ]; then
+            # echo "Error: No linux-headers deb found in build directory!"
+            # exit 1
+        # fi
+        # cp "$linux_headers_package" "${rootfs}/tmp/"
         # 先安装 rockchip headers，解决依赖关系
-        sudo chroot "${rootfs}" dpkg -i /tmp/linux-rockchip-headers-*.deb
+        # chroot "${rootfs}" dpkg -i /tmp/linux-rockchip-headers-*.deb
 
         # 再安装 kernel headers、image、modules 等包
-        sudo chroot "${rootfs}" dpkg -i /tmp/linux-headers-*.deb
-        sudo chroot "${rootfs}" dpkg -i /tmp/linux-image-*.deb
-        sudo chroot "${rootfs}" dpkg -i /tmp/linux-modules-*.deb
+        # chroot "${rootfs}" dpkg -i /tmp/linux-headers-*.deb
+        # chroot "${rootfs}" dpkg -i /tmp/linux-image-*.deb
+        # chroot "${rootfs}" dpkg -i /tmp/linux-modules-*.deb
 
         # 最后安装补充依赖
-        sudo chroot "${rootfs}" apt-get -fy install
+        # chroot "${rootfs}" apt-get -fy install
         # chroot "${rootfs}" dpkg -i "/tmp/$(basename "$linux_headers_package")" || chroot "${rootfs}" apt-get -y -f install
 
         # 3. 克隆GitHub仓库到chroot环境
