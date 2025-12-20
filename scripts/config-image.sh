@@ -43,45 +43,24 @@ if [[ ${LAUNCHPAD} != "Y" ]]; then
         exit 1
     fi
 
-    linux_image_package="$(basename "$(find linux-image-*.deb | sort | tail -n1)")"
-    if [ ! -e "$linux_image_package" ]; then
-        echo "Error: could not find the linux image package"
-        exit 1
-    fi
-
-    linux_headers_package="$(basename "$(find linux-headers-*.deb | sort | tail -n1)")"
-    if [ ! -e "$linux_headers_package" ]; then
-        echo "Error: could not find the linux headers package"
-        exit 1
-    fi
-
-    linux_modules_package="$(basename "$(find linux-modules-*.deb | sort | tail -n1)")"
-    if [ ! -e "$linux_modules_package" ]; then
-        echo "Error: could not find the linux modules package"
-        exit 1
-    fi
-
-    linux_buildinfo_package="$(basename "$(find linux-buildinfo-*.deb | sort | tail -n1)")"
-    if [ ! -e "$linux_buildinfo_package" ]; then
-        echo "Error: could not find the linux buildinfo package"
-        exit 1
-    fi
-
-    linux_rockchip_headers_package="$(basename "$(find linux-rockchip-headers-*.deb | sort | tail -n1)")"
-    if [ ! -e "$linux_rockchip_headers_package" ]; then
-        echo "Error: could not find the linux rockchip headers package"
-        exit 1
-    fi
+    # 找到所有 kernel 相关 deb 包
+    kernel_debs=()
+    for pattern in "linux-image-*.deb" "linux-headers-*.deb" "linux-modules-*.deb" "linux-buildinfo-*.deb" "linux-rockchip-headers-*.deb"; do
+        deb_file="$(basename "$(find $pattern | sort | tail -n1)")"
+        if [ ! -e "$deb_file" ]; then
+            echo "Error: could not find $pattern"
+            exit 1
+        fi
+        kernel_debs+=("$deb_file")
+    done
 fi
 
 setup_mountpoint() {
     local mountpoint="$1"
-
     if [ ! -c /dev/mem ]; then
         mknod -m 660 /dev/mem c 1 1
         chown root:kmem /dev/mem
     fi
-
     mount dev-live -t devtmpfs "$mountpoint/dev"
     mount devpts-live -t devpts -o nodev,nosuid "$mountpoint/dev/pts"
     mount proc-live -t proc "$mountpoint/proc"
@@ -128,7 +107,7 @@ if [[ ${LAUNCHPAD} == "Y" ]]; then
 else
     mkdir -p ${chroot_dir}/tmp
 
-    # 处理 u-boot deb
+    # 安装 u-boot
     if [ -f "./${uboot_package}" ]; then
         base_name=$(echo "$uboot_package" | sed 's/_.*//')
         cp "./${uboot_package}" "${chroot_dir}/tmp/${base_name}.deb"
@@ -142,8 +121,8 @@ else
         exit 1
     fi
 
-    # 处理所有内核相关 deb 包，拷贝重命名为短名，再安装
-    for deb in "${linux_image_package}" "${linux_headers_package}" "${linux_modules_package}" "${linux_buildinfo_package}" "${linux_rockchip_headers_package}"; do
+    # 复制全部 kernel deb，改短名
+    for deb in "${kernel_debs[@]}"; do
         if [ ! -f "./$deb" ]; then
             echo "Error: missing deb file $deb"
             ls -lh
@@ -151,13 +130,24 @@ else
         fi
         base_name=$(echo "$deb" | sed 's/_.*//')
         cp "./$deb" "${chroot_dir}/tmp/${base_name}.deb"
-        chroot "${chroot_dir}" dpkg -i "/tmp/${base_name}.deb" || (
-            chroot "${chroot_dir}" apt-get -fy install && chroot "${chroot_dir}" dpkg -i "/tmp/${base_name}.deb"
-        )
-        chroot "${chroot_dir}" apt-mark hold "${base_name}"
     done
 
+    # 校验拷贝
     ls -lh "${chroot_dir}/tmp/"
+
+    # 批量 dpkg 安装所有 kernel deb
+    deb_files=""
+    for deb in "${kernel_debs[@]}"; do
+        base_name=$(echo "$deb" | sed 's/_.*//')
+        deb_files+="/tmp/${base_name}.deb "
+    done
+    chroot "${chroot_dir}" dpkg -i $deb_files || chroot "${chroot_dir}" apt-get -fy install
+
+    # hold
+    for deb in "${kernel_debs[@]}"; do
+        base_name=$(echo "$deb" | sed 's/_.*//')
+        chroot "${chroot_dir}" apt-mark hold "${base_name}"
+    done
 fi
 
 if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
