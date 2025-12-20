@@ -40,7 +40,7 @@ function config_image_hook__orangepi-5-max() {
 
         # 克隆 bcmdhd-dkms 仓库
         chroot "${rootfs}" bash -c "rm -rf /tmp/bcmdhd-dkms && git clone https://github.com/Joshua-Riek/bcmdhd-dkms.git /tmp/bcmdhd-dkms"
-        
+
         # 检查仓库文件，增强日志
         chroot "${rootfs}" bash -c "ls -lh /tmp/bcmdhd-dkms; cat /tmp/bcmdhd-dkms/debian/changelog || true"
 
@@ -51,26 +51,32 @@ function config_image_hook__orangepi-5-max() {
             exit 1
         }
 
-        # 列出 /tmp，便于确认产物
-        chroot "${rootfs}" bash -c "ls -lh /tmp/"
+        # 校验三个子包都存在
+        chroot "${rootfs}" bash -c '
+            for t in pcie sdio usb; do
+                if ! ls /tmp/bcmdhd-${t}-dkms_*.deb >/dev/null 2>&1; then
+                    echo "Error: /tmp/bcmdhd-${t}-dkms deb 未生成"
+                    exit 1
+                fi
+            done
+        '
+        echo "bcmdhd pcie/sdio/usb dkms deb 已全部生成。"
 
-        # 找到deb包并安装
-        bcmdhd_dkms_deb=$(chroot "${rootfs}" bash -c "find /tmp -maxdepth 1 -type f -name 'bcmdhd-dkms_*.deb' | head -n1")
-        if [[ -n "$bcmdhd_dkms_deb" ]]; then
-            chroot "${rootfs}" dpkg -i "$bcmdhd_dkms_deb" || chroot "${rootfs}" apt-get -y -f install
-            bcmdhd_ver=$(chroot "${rootfs}" bash -c "cd /tmp/bcmdhd-dkms && dpkg-parsechangelog | grep '^Version:' | awk '{print \$2}'")
-            chroot "${rootfs}" dkms add -m bcmdhd -v "$bcmdhd_ver"
-            chroot "${rootfs}" dkms build -m bcmdhd -v "$bcmdhd_ver"
-            chroot "${rootfs}" dkms install -m bcmdhd -v "$bcmdhd_ver"
-            chroot "${rootfs}" dkms enable bcmdhd || true
-            echo "bcmdhd-dkms installed successfully via GitHub source"
+        # 只安装SDIO版本
+        bcmdhd_sdio_deb=$(chroot "${rootfs}" bash -c "ls /tmp/bcmdhd-sdio-dkms_*.deb | head -n1")
+        if [[ -n "$bcmdhd_sdio_deb" ]]; then
+            chroot "${rootfs}" dpkg -i "$bcmdhd_sdio_deb" || chroot "${rootfs}" apt-get -y -f install
+            bcmdhd_ver=$(chroot "${rootfs}" bash -c "dpkg-deb -f \"$bcmdhd_sdio_deb\" Version")
+            chroot "${rootfs}" dkms add -m bcmdhd-sdio -v "$bcmdhd_ver"
+            chroot "${rootfs}" dkms build -m bcmdhd-sdio -v "$bcmdhd_ver"
+            chroot "${rootfs}" dkms install -m bcmdhd-sdio -v "$bcmdhd_ver"
+            chroot "${rootfs}" dkms enable bcmdhd-sdio || true
+            echo "bcmdhd-sdio-dkms 安装完成"
         else
-            echo "Error: bcmdhd-dkms deb 未生成, 日志如下："
+            echo "Error: bcmdhd-sdio-dkms deb 未生成"
             cat "${rootfs}/tmp/build_bcmdhd.log"
             exit 1
         fi
-
-        echo "install dkms"
 
         # Enable bluetooth
         cp "${overlay}/usr/bin/brcm_patchram_plus" "${rootfs}/usr/bin/brcm_patchram_plus"
