@@ -135,11 +135,6 @@ setup_mountpoint $chroot_dir
 chroot $chroot_dir apt-get update
 chroot $chroot_dir apt-get -y upgrade
 
-# Run config hook to handle board specific changes
-if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
-    config_image_hook__"${BOARD}" "${chroot_dir}" "${overlay_dir}" "${SUITE}"
-fi 
-
 # Download and install U-Boot和内核
 if [[ ${LAUNCHPAD} == "Y" ]]; then
     chroot ${chroot_dir} apt-get -y install "u-boot-${BOARD}"
@@ -171,6 +166,11 @@ else
     done
     ls -lh "${chroot_dir}/tmp/"
 fi
+
+# Run config hook to handle board specific changes
+if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
+    config_image_hook__"${BOARD}" "${chroot_dir}" "${overlay_dir}" "${SUITE}"
+fi 
 
 # Update the initramfs
 chroot ${chroot_dir} update-initramfs -u
