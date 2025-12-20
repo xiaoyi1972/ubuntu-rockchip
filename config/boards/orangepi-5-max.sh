@@ -65,6 +65,8 @@ function config_image_hook__orangepi-5-max() {
         # 只安装SDIO版本
         bcmdhd_sdio_deb=$(chroot "${rootfs}" bash -c "ls /tmp/bcmdhd-sdio-dkms_*.deb | head -n1")
         if [[ -n "$bcmdhd_sdio_deb" ]]; then
+            # sudo apt-get update
+            sudo apt-get install -y rockchip-firmware
             chroot "${rootfs}" dpkg -i "$bcmdhd_sdio_deb" || chroot "${rootfs}" apt-get -y -f install
             bcmdhd_ver=$(chroot "${rootfs}" bash -c "dpkg-deb -f \"$bcmdhd_sdio_deb\" Version")
             chroot "${rootfs}" dkms add -m bcmdhd-sdio -v "$bcmdhd_ver"
