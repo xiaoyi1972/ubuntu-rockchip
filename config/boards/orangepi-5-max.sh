@@ -9,6 +9,71 @@ export UBOOT_RULES_TARGET="orangepi-5-max-rk3588"
 export COMPATIBLE_SUITES=("plucky")
 export COMPATIBLE_FLAVORS=("server" "desktop")
 
+# 通用的deb包构建函数
+# 参数说明：
+#   $1: rootfs路径 (必填)
+#   $2: git仓库地址 (必填)
+#   $3: 工作目录（如tmp，会拼接成/${dir}/xxx） (必填)
+# 返回值：生成的deb包路径数组（通过stdout输出）
+build_package_with() {
+    local rootfs="$1"
+    local repo="$2"
+    local dir="$3"
+    
+    # 校验参数完整性
+    if [[ -z "${rootfs}" || -z "${repo}" || -z "${dir}" ]]; then
+        echo "Error: build_package_with 缺少必要参数" >&2
+        exit 1
+    fi
+
+    # 提取仓库名称（去掉.git后缀）
+    local repo_name=$(basename "${repo}" .git)
+    local work_dir="/${dir}/${repo_name}"
+    local build_log="/${dir}/build_${repo_name}.log"
+
+    # 1. 克隆/更新仓库
+    echo "Cloning repo ${repo} to ${work_dir}..."
+    chroot "${rootfs}" bash -c "rm -rf ${work_dir} && git clone ${repo} ${work_dir}" || {
+        echo "Error: 克隆仓库 ${repo} 失败" >&2
+        exit 1
+    }
+
+    # 2. 检查仓库文件并输出日志
+    echo "Checking repository files..."
+    chroot "${rootfs}" bash -c "ls -lh ${work_dir}; cat ${work_dir}/debian/changelog || true"
+
+    # 3. 构建deb包并保存日志
+    echo "Building deb package, log saved to ${build_log}..."
+    chroot "${rootfs}" bash -c "cd ${work_dir} && dpkg-buildpackage -us -uc -b" > "${rootfs}${build_log}" 2>&1 || {
+        echo "Error: dpkg-buildpackage 失败，日志如下：" >&2
+        cat "${rootfs}${build_log}" >&2
+        exit 1
+    }
+
+    # 4. 从debian/control提取所有Package名称
+    local packages
+    packages=$(chroot "${rootfs}" bash -c "grep -E '^Package: ' ${work_dir}/debian/control | awk '{print \$2}'")
+    if [[ -z "${packages}" ]]; then
+        echo "Error: 未从 ${work_dir}/debian/control 中提取到Package名称" >&2
+        exit 1
+    fi
+
+    # 5. 校验每个Package对应的deb包是否生成
+    for pkg in ${packages}; do
+        if ! chroot "${rootfs}" bash -c "ls /${dir}/${pkg}_*.deb >/dev/null 2>&1"; then
+            echo "Error: /${dir}/${pkg}_*.deb 未生成" >&2
+            exit 1
+        fi
+        echo "确认生成包: /${dir}/${pkg}_*.deb"
+    done
+    echo "所有Package对应的deb包已全部生成。"
+
+    # 6. 收集所有生成的deb包路径并输出（作为函数返回值）
+    local deb_paths
+    deb_paths=$(chroot "${rootfs}" bash -c "for pkg in ${packages}; do ls /${dir}/\${pkg}_*.deb; done")
+    echo "${deb_paths}"
+}
+
 function config_image_hook__orangepi-5-max() {
     local rootfs="$1"
     local overlay="$2"
@@ -38,47 +103,46 @@ function config_image_hook__orangepi-5-max() {
         chroot "${rootfs}" apt-get update
         chroot "${rootfs}" apt-get install -y git dkms build-essential debhelper dh-dkms
 
-        # 克隆 bcmdhd-dkms 仓库
-        chroot "${rootfs}" bash -c "rm -rf /tmp/bcmdhd-dkms && git clone https://github.com/Joshua-Riek/bcmdhd-dkms.git /tmp/bcmdhd-dkms"
+        # build for rockchip-firmware
+        deb_paths=$(build_package_with "${rootfs}" "https://github.com/Joshua-Riek/firmware.git" "tmp")
+        for deb_path in ${deb_paths}; do
+            if [[ -n "${deb_path}" ]]; then
+                chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install
+                echo "${pkg_name} 安装完成"
+            else
+                echo "Error: ${deb_path} 不存在"
+                cat "${rootfs}/tmp/build_bcmdhd-dkms.log"
+                exit 1
+            fi
+            break  
+        done
 
-        # 检查仓库文件，增强日志
-        chroot "${rootfs}" bash -c "ls -lh /tmp/bcmdhd-dkms; cat /tmp/bcmdhd-dkms/debian/changelog || true"
+        # build for bcmdhd-dkms
+        deb_paths=$(build_package_with "${rootfs}" "https://github.com/Joshua-Riek/bcmdhd-dkms.git" "tmp")
 
-        # 构建deb包并保存日志
-        chroot "${rootfs}" bash -c 'cd /tmp/bcmdhd-dkms && dpkg-buildpackage -us -uc -b' > "${rootfs}/tmp/build_bcmdhd.log" 2>&1 || {
-            echo "Error: dpkg-buildpackage 失败，日志如下："
-            cat "${rootfs}/tmp/build_bcmdhd.log"
-            exit 1
-        }
-
-        # 校验三个子包都存在
-        chroot "${rootfs}" bash -c '
-            for t in pcie sdio usb; do
-                if ! ls /tmp/bcmdhd-${t}-dkms_*.deb >/dev/null 2>&1; then
-                    echo "Error: /tmp/bcmdhd-${t}-dkms deb 未生成"
+        # 遍历生成的deb包（这里示例只处理sdio版本，可根据实际需求调整）
+        for deb_path in ${deb_paths}; do
+            if [[ "${deb_path}" == *"bcmdhd-sdio-dkms_"* ]]; then
+                # 只安装SDIO版本
+                if [[ -n "${deb_path}" ]]; then
+                    # sudo apt-get update (注：原代码此处sudo可能有问题，chroot内无需sudo)
+                    chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install
+                    local bcmdhd_ver
+                    bcmdhd_ver=$(chroot "${rootfs}" bash -c "dpkg-deb -f \"${deb_path}\" Version")
+                    local pkg_name=$(basename "${deb_path}" | cut -d'_' -f1)
+                    chroot "${rootfs}" dkms add -m "${pkg_name}" -v "${bcmdhd_ver}"
+                    chroot "${rootfs}" dkms build -m "${pkg_name}" -v "${bcmdhd_ver}"
+                    chroot "${rootfs}" dkms install -m "${pkg_name}" -v "${bcmdhd_ver}"
+                    chroot "${rootfs}" dkms enable "${pkg_name}" || true
+                    echo "${pkg_name} 安装完成"
+                else
+                    echo "Error: ${deb_path} 不存在"
+                    cat "${rootfs}/tmp/build_bcmdhd-dkms.log"
                     exit 1
                 fi
-            done
-        '
-        echo "bcmdhd pcie/sdio/usb dkms deb 已全部生成。"
-
-        # 只安装SDIO版本
-        bcmdhd_sdio_deb=$(chroot "${rootfs}" bash -c "ls /tmp/bcmdhd-sdio-dkms_*.deb | head -n1")
-        if [[ -n "$bcmdhd_sdio_deb" ]]; then
-            # sudo apt-get update
-            sudo apt-get install -y rockchip-firmware
-            chroot "${rootfs}" dpkg -i "$bcmdhd_sdio_deb" || chroot "${rootfs}" apt-get -y -f install
-            bcmdhd_ver=$(chroot "${rootfs}" bash -c "dpkg-deb -f \"$bcmdhd_sdio_deb\" Version")
-            chroot "${rootfs}" dkms add -m bcmdhd-sdio -v "$bcmdhd_ver"
-            chroot "${rootfs}" dkms build -m bcmdhd-sdio -v "$bcmdhd_ver"
-            chroot "${rootfs}" dkms install -m bcmdhd-sdio -v "$bcmdhd_ver"
-            chroot "${rootfs}" dkms enable bcmdhd-sdio || true
-            echo "bcmdhd-sdio-dkms 安装完成"
-        else
-            echo "Error: bcmdhd-sdio-dkms deb 未生成"
-            cat "${rootfs}/tmp/build_bcmdhd.log"
-            exit 1
-        fi
+                break  # 找到sdio版本后退出循环
+            fi
+        done
 
         # Enable bluetooth
         cp "${overlay}/usr/bin/brcm_patchram_plus" "${rootfs}/usr/bin/brcm_patchram_plus"
