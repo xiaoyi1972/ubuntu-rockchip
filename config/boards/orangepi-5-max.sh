@@ -56,7 +56,17 @@ function config_image_hook__orangepi-5-max() {
             exit 1
         fi
         cp "$linux_headers_package" "${rootfs}/tmp/"
-        chroot "${rootfs}" dpkg -i "/tmp/$(basename "$linux_headers_package")" || chroot "${rootfs}" apt-get -y -f install
+        # 先安装 rockchip headers，解决依赖关系
+        sudo chroot "${rootfs}" dpkg -i /tmp/linux-rockchip-headers-*.deb
+
+        # 再安装 kernel headers、image、modules 等包
+        sudo chroot "${rootfs}" dpkg -i /tmp/linux-headers-*.deb
+        sudo chroot "${rootfs}" dpkg -i /tmp/linux-image-*.deb
+        sudo chroot "${rootfs}" dpkg -i /tmp/linux-modules-*.deb
+
+        # 最后安装补充依赖
+        sudo chroot "${rootfs}" apt-get -fy install
+        # chroot "${rootfs}" dpkg -i "/tmp/$(basename "$linux_headers_package")" || chroot "${rootfs}" apt-get -y -f install
 
         # 3. 克隆GitHub仓库到chroot环境
         chroot "${rootfs}" git clone https://github.com/Joshua-Riek/bcmdhd-dkms.git /tmp/bcmdhd-dkms
