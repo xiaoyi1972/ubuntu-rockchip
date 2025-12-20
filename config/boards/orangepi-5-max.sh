@@ -79,7 +79,7 @@ function old_config_image_hook__orangepi-5-max_other() {
     local overlay="$2"
     local suite="$3"
 
-    if [ "${suite}" == "jammy" ] || [ "${suite}" == "noble" ] || [ "${suite}" == "oracular" ] || [ "${suite}== "plucky" ]; then
+    if [ "${suite}" == "jammy" ] || [ "${suite}" == "noble" ] || [ "${suite}" == "oracular" ] || [ "${suite}" == "plucky" ]; then
         # Kernel modules to blacklist
         echo "blacklist bcmdhd" > "${rootfs}/etc/modprobe.d/bcmdhd.conf"
         echo "blacklist dhd_static_buf" >> "${rootfs}/etc/modprobe.d/bcmdhd.conf"
