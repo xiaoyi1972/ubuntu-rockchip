@@ -107,7 +107,7 @@ function old_config_image_hook__orangepi-5-max_other() {
 
         # Enable bluetooth
         cp "${overlay}/usr/bin/brcm_patchram_plus" "${rootfs}/usr/bin/brcm_patchram_plus"
-        cp "${overlay}/usr/lib/systemd/
+        cp "${overlay}/usr/lib/systemd/system/ap6611s-bluetooth.service" "${rootfs}/usr/lib/systemd/system/ap6611s-bluetooth.service"
         chroot "${rootfs}" systemctl enable ap6611s-bluetooth
 
         # Install wiring orangepi package 
