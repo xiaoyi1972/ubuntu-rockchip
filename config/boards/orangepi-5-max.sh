@@ -47,7 +47,7 @@ function config_image_hook__orangepi-5-max() {
         chroot "${rootfs}" bash -c "cd /tmp/bcmdhd-dkms && dpkg-buildpackage -us -uc -b"
 
         # 5. 查找并安装生成的deb包，如果没有则立即中断
-        bcmdhd_dkms_deb=$(chroot "${rootfs}" bash -c "find /tmp -maxdepth 1 -type f -name 'bcmdhd-dkms_*.deb' | head -n1")
+        bcmdhd_dkms_deb=$(chroot "${rootfs}" bash -c "find /tmp -type f -name 'bcmdhd-dkms_*.deb' | head -n1")
         if [[ -n "$bcmdhd_dkms_deb" ]]; then
             chroot "${rootfs}" dpkg -i "$bcmdhd_dkms_deb" || chroot "${rootfs}" apt-get -y -f install
             chroot "${rootfs}" dkms add -m bcmdhd -v $(cat /tmp/bcmdhd-dkms/debian/changelog | head -n1 | grep -oP '\d+\.\d+\.\d+-\d+')
