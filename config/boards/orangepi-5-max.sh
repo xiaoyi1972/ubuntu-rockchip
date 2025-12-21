@@ -11,10 +11,10 @@ export COMPATIBLE_FLAVORS=("server" "desktop")
 
 # 通用的deb包构建函数
 # 参数说明：
-#   $1: rootfs路径 (必填)
-#   $2: git仓库地址 (必填)
-#   $3: 工作目录（如tmp，会拼接成/${dir}/xxx） (必填)
-# 返回值：生成的deb包路径数组（通过stdout输出）
+# $1: rootfs路径 (必填)
+# $2: git仓库地址 (必填)
+# $3: 工作目录（如tmp，会拼接成/${dir}/xxx） (必填)
+# $4: 储存生成的deb包路径数组的变量
 build_package_with() {
     local rootfs="$1"
     local repo="$2"
