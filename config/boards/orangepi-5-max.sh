@@ -146,6 +146,7 @@ function config_image_hook__orangepi-5-max() {
                 if [[ -n "${deb_path}" ]]; then
                     # sudo apt-get update (注：原代码此处sudo可能有问题，chroot内无需sudo)
                     chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install
+                    cat /var/lib/dkms/bcmdhd-sdio/101.10.591.52.27-1/build/make.log
                     local bcmdhd_ver
                     bcmdhd_ver=$(chroot "${rootfs}" bash -c "dpkg-deb -f \"${deb_path}\" Version")
                     local pkg_name=$(basename "${deb_path}" | cut -d'_' -f1)
