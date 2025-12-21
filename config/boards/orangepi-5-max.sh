@@ -74,7 +74,7 @@ build_package_with() {
     # echo "${deb_paths}"
 
     # 6. 收集所有生成的deb包路径并输出（作为函数返回值）
-    chroot rootfs bash -c 'for pkg in bcmdhd-sdio-dkms bcmdhd-pcie-dkms bcmdhd-usb-dkms; do ls /tmp/${pkg}_*.deb 2>/dev/null; done'chroot rootfs bash -c 'for pkg in bcmdhd-sdio-dkms bcmdhd-pcie-dkms bcmdhd-usb-dkms; do ls /tmp/${pkg}_*.deb 2>/dev/null; done'local deb_paths=""
+    # chroot rootfs bash -c 'for pkg in bcmdhd-sdio-dkms bcmdhd-pcie-dkms bcmdhd-usb-dkms; do ls /tmp/${pkg}_*.deb 2>/dev/null; done'chroot rootfs bash -c 'for pkg in bcmdhd-sdio-dkms bcmdhd-pcie-dkms bcmdhd-usb-dkms; do ls /tmp/${pkg}_*.deb 2>/dev/null; done'local deb_paths=""
     for pkg in ${packages}; do
        # find更保险，如果没有文件不会报错
        found=$(chroot "${rootfs}" find "/${dir}" -maxdepth 1 -type f -name "${pkg}_*.deb" 2>/dev/null)
