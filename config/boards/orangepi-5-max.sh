@@ -31,7 +31,7 @@ build_package_with() {
     local repo_name=$(basename "${repo}" .git)
     local work_dir="/${dir}/${repo_name}"
     local build_log="/${dir}/build_${repo_name}.log"
-
+    local deb_paths=""
     # 1. 克隆/更新仓库
     echo "Cloning repo ${repo} to ${work_dir}..."
     chroot "${rootfs}" bash -c "rm -rf ${work_dir} && git clone ${repo} ${work_dir}" || {
