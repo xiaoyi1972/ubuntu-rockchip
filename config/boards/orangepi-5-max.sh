@@ -31,7 +31,7 @@ build_package_with() {
     local repo_name=$(basename "${repo}" .git)
     local work_dir="/${dir}/${repo_name}"
     local build_log="/${dir}/build_${repo_name}.log"
-    local deb_paths=""
+    local deb_paths_collects=""
     # 1. 克隆/更新仓库
     echo "Cloning repo ${repo} to ${work_dir}..."
     chroot "${rootfs}" bash -c "rm -rf ${work_dir} && git clone ${repo} ${work_dir}" || {
@@ -40,8 +40,8 @@ build_package_with() {
     }
 
     # 2. 检查仓库文件并输出日志
-    echo "Checking repository files..."
-    chroot "${rootfs}" bash -c "ls -lh ${work_dir}; cat ${work_dir}/debian/changelog || true"
+    # echo "Checking repository files..."
+    #.chroot "${rootfs}" bash -c "ls -lh ${work_dir}; cat ${work_dir}/debian/changelog || true"
 
     # 3. 构建deb包并保存日志
     echo "Building deb package, log saved to ${build_log}..."
@@ -80,15 +80,15 @@ build_package_with() {
        # find更保险，如果没有文件不会报错
        found=$(chroot "${rootfs}" find "/${dir}" -maxdepth 1 -type f -name "${pkg}_*.deb" 2>/dev/null)
        if [[ -n "${found}" ]]; then
-           deb_paths="${deb_paths} ${found}"
+           deb_paths_collects="${deb_paths_collects} ${found}"
         fi
      done
-     deb_paths=$(echo "${deb_paths}" | xargs)  # 去除多余空格
+     deb_paths_collects=$(echo "${deb_paths_collects}" | xargs)  # 去除多余空格
      # echo "${deb_paths}"
      # 最后赋值
      if [[ "$result" ]]; then
          # 注意：这里用间接变量展开（Bash）
-         eval $result="'$deb_paths'"
+         eval $result="'$deb_paths_collects'"
      fi
 }
 
