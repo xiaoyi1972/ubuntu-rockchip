@@ -19,6 +19,7 @@ build_package_with() {
     local rootfs="$1"
     local repo="$2"
     local dir="$3"
+    local result="$4"
     
     # 校验参数完整性
     if [[ -z "${rootfs}" || -z "${repo}" || -z "${dir}" ]]; then
@@ -83,7 +84,12 @@ build_package_with() {
         fi
      done
      deb_paths=$(echo "${deb_paths}" | xargs)  # 去除多余空格
-     echo "${deb_paths}"
+     # echo "${deb_paths}"
+     # 最后赋值
+     if [[ "$result" ]]; then
+         # 注意：这里用间接变量展开（Bash）
+         eval $result="'$deb_paths'"
+     fi
 }
 
 function config_image_hook__orangepi-5-max() {
@@ -116,7 +122,8 @@ function config_image_hook__orangepi-5-max() {
         chroot "${rootfs}" apt-get install -y git dkms build-essential debhelper dh-dkms
 
         # build for rockchip-firmware
-        deb_paths=$(build_package_with "${rootfs}" "https://github.com/Joshua-Riek/firmware.git" "tmp")
+        local deb_paths
+        build_package_with "${rootfs}" "https://github.com/Joshua-Riek/firmware.git" "tmp" deb_paths
         for deb_path in ${deb_paths}; do
             if [[ -n "${deb_path}" ]]; then
                 chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install
@@ -130,7 +137,7 @@ function config_image_hook__orangepi-5-max() {
         done
 
         # build for bcmdhd-dkms
-        deb_paths=$(build_package_with "${rootfs}" "https://github.com/Joshua-Riek/bcmdhd-dkms.git" "tmp")
+        build_package_with "${rootfs}" "https://github.com/Joshua-Riek/bcmdhd-dkms.git" "tmp" deb_paths
 
         # 遍历生成的deb包（这里示例只处理sdio版本，可根据实际需求调整）
         for deb_path in ${deb_paths}; do
