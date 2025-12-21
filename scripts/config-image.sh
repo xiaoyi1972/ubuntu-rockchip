@@ -145,6 +145,7 @@ else
         base_name=$(echo "$deb" | sed 's/_.*//')
         deb_files+="/tmp/${base_name}.deb "
     done
+    chroot ${chroot_dir} /bin/bash -c "apt-get -y purge \$(dpkg --list | grep -Ei 'linux-image|linux-headers|linux-modules|linux-rockchip' | awk '{ print \$2 }')"
     chroot "${chroot_dir}" dpkg -i $deb_files || chroot "${chroot_dir}" apt-get -fy install
 
     # hold
