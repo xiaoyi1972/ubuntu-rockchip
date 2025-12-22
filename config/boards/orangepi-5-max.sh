@@ -180,8 +180,8 @@ function config_image_hook__orangepi-5-max() {
         chroot "${rootfs}" systemctl enable ap6611s-bluetooth
 
         # Install wiring orangepi package 
-        chroot "${rootfs}" apt-get -y install wiringpi-opi libwiringpi2-opi libwiringpi-opi-dev
-        echo "BOARD=orangepi5max" > "${rootfs}/etc/orangepi-release"
+        # chroot "${rootfs}" apt-get -y install wiringpi-opi libwiringpi2-opi libwiringpi-opi-dev
+        # echo "BOARD=orangepi5max" > "${rootfs}/etc/orangepi-release"
     fi
     return 0
 }
