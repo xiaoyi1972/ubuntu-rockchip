@@ -79,8 +79,8 @@ setup_mountpoint() {
 teardown_mountpoint() {
     local mountpoint
     mountpoint=$(realpath "$1")
-    mountpoint_match=$(echo "$mountpoint" | sed -e's,/$,,; s,/,\\/,g;')'\\/'
-    awk </proc/self/mounts "\$2 ~ /$mountpoint_match/ { print \$2 }" | LC_ALL=C sort -r | while IFS= read -r submount; do
+    mountpoint_match=$(echo "$mountpoint" | sed -e 's,/$,,; s,/,\\/,g')
+    awk -v mp="$mountpoint_match" '$2 ~ "^"mp { print $2 }' </proc/self/mounts | LC_ALL=C sort -r | while IFS= read -r submount; do
         mount --make-private "$submount"
         umount "$submount"
     done
@@ -162,7 +162,6 @@ chroot ${chroot_dir} apt-get -y autoremove
 
 teardown_mountpoint $chroot_dir
 
-# cd ${chroot_dir} && tar -cpf "../ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar" . && cd .. && rm -rf ${chroot_dir}
 # 核心打包+清理命令（优化日志+排除无用目录）
 {
   cd "${chroot_dir}" && \
@@ -174,11 +173,11 @@ teardown_mountpoint $chroot_dir
       --exclude='./run/*' \
       -cpf "../ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar" . 2> >(grep -v "warning" >&2) && \
   cd .. && \
-  sudo rm -rf "${chroot_dir}"
+  rm -rf "${chroot_dir}"  # 移除sudo，脚本已要求root运行，无需额外sudo
 } || {
   # 出错时清理目录+输出错误信息
   echo "ERROR: 打包rootfs失败，清理残留目录"
-  sudo rm -rf "${chroot_dir}"
+  rm -rf "${chroot_dir}"
   exit 1
 }
 ../scripts/build-image.sh "ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar"
