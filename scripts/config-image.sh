@@ -174,11 +174,11 @@ teardown_mountpoint $chroot_dir
       --exclude='./run/*' \
       -cpf "../ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar" . 2> >(grep -v "warning" >&2) && \
   cd .. && \
-  rm -rf "${chroot_dir}"
+  sudo rm -rf "${chroot_dir}"
 } || {
   # 出错时清理目录+输出错误信息
   echo "ERROR: 打包rootfs失败，清理残留目录"
-  rm -rf "${chroot_dir}"
+  sudo rm -rf "${chroot_dir}"
   exit 1
 }
 ../scripts/build-image.sh "ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar"
