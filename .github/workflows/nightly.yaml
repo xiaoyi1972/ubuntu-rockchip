@@ -400,6 +400,25 @@ jobs:
           cd ${{ github.workspace }}
           sudo bash ./build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} 2>&1 | tee build-image.log
 
+      - name: Make deb-packages zip
+        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true'
+        run: |
+          set -e
+          mkdir -p ${{ github.workspace }}/releases
+          cd ${{ github.workspace }}/build
+          zip ${{ github.workspace }}/releases/deb-packages-${{ matrix.board }}-${{ matrix.suite }}.zip ./*.deb
+          ls -lh ${{ github.workspace }}/releases/
+
+      - name: Upload deb-packages zip to Release
+        if: steps.check_remote_deb.outputs.deb_remote_exists != 'true' && env.GITHUB_TOKEN != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ env.RELEASE_TAG }} \
+            ${{ github.workspace }}/releases/deb-packages-${{ matrix.board }}-${{ matrix.suite }}.zip \
+            --repo ${{ env.REPO_OWNER }}/${{ env.REPO_NAME }} \
+            --clobber
+
       - name: Save build log (debug)
         uses: actions/upload-artifact@v4.3.3
         with:
