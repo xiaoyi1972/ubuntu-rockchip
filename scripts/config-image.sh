@@ -102,10 +102,6 @@ setup_mountpoint $chroot_dir
 chroot $chroot_dir apt-get update
 chroot $chroot_dir apt-get -y upgrade
 
-if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
-    config_image_hook__"${BOARD}" "${chroot_dir}" "${overlay_dir}" "${SUITE}"
-fi
-
 if [[ ${LAUNCHPAD} == "Y" ]]; then
     chroot ${chroot_dir} apt-get -y install "u-boot-${BOARD}"
 else
@@ -153,6 +149,10 @@ else
         base_name=$(echo "$deb" | sed 's/_.*//')
         chroot "${chroot_dir}" apt-mark hold "${base_name}"
     done
+fi
+
+if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
+    config_image_hook__"${BOARD}" "${chroot_dir}" "${overlay_dir}" "${SUITE}"
 fi
 
 chroot ${chroot_dir} update-initramfs -u
