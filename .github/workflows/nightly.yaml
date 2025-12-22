@@ -420,6 +420,7 @@ jobs:
             --clobber
 
       - name: Save build log (debug)
+        if: always()
         uses: actions/upload-artifact@v4.3.3
         with:
           name: image-build-log-${{ matrix.board }}-${{ matrix.suite }}-${{ matrix.flavor }}
