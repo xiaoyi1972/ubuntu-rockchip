@@ -20,6 +20,13 @@ jobs:
       build_matrix: ${{ steps.build.outputs.build_matrix }}
       rootfs_matrix: ${{ steps.rootfs.outputs.rootfs_matrix }}
     steps:
+      - name: 🧹 前置清理磁盘空间
+        run: |
+          # 清理Runner日志和临时文件
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          sudo rm -rf /tmp/* /var/tmp/* || true
+          df -h
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -67,15 +74,26 @@ jobs:
       fail-fast: false
     timeout-minutes: 180
     steps:
-      - name: Get more disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
+      - name: 🧹 彻底清理磁盘空间（解决No space left）
+        run: |
+          # 1. 清理Runner日志（核心解决报错目录）
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          sudo rm -rf /home/runner/_diag/* || true
+          
+          # 2. 清理系统大文件（释放10GB+空间）
+          sudo docker system prune -a -f || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y --purge
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          
+          # 3. 清理旧构建残留
+          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
+          sudo rm -rf /tmp/* /var/tmp/* || true
+          
+          # 验证清理结果
+          echo "===== 磁盘空间清理后状态 ====="
+          df -h
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -181,7 +199,7 @@ jobs:
         shell: bash
         run: |
           cd ${{ github.workspace }}
-          sudo bash -x ./build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only 2>&1 | tee build-rootfs.log
+          sudo bash ./build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only 2>&1 | tee build-rootfs.log
 
       - name: Save build log (debug)
         uses: actions/upload-artifact@v4.3.3
@@ -209,6 +227,8 @@ jobs:
           key: rootfs-${{ matrix.suite }}-${{ matrix.flavor }}-${{ hashFiles('config/suites/*.sh', 'config/flavors/*.sh') }}
           restore-keys: |
             rootfs-${{ matrix.suite }}-${{ matrix.flavor }}-
+          enableCrossOsArchive: true
+          save-always: false
 
       - name: Upload rootfs artifact
         uses: actions/upload-artifact@v4.3.3
@@ -219,6 +239,14 @@ jobs:
           compression-level: 6
           overwrite: false
 
+      - name: 🧹 清理rootfs临时构建文件（释放空间）
+        run: |
+          # 保留最终产物，删除临时文件
+          sudo rm -rf ${{ github.workspace }}/build/chroot || true
+          sudo rm -rf ${{ github.workspace }}/build/rootfs || true
+          sync && echo 3 | sudo tee /proc/sys/vm/drop_caches || true
+          df -h
+
   build:
     runs-on: ubuntu-22.04
     name: Build image (${{ matrix.board }}-${{ matrix.suite }}-${{ matrix.flavor }})
@@ -228,15 +256,26 @@ jobs:
       fail-fast: false
     timeout-minutes: 180
     steps:
-      - name: Get more disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
+      - name: 🧹 彻底清理磁盘空间（解决No space left）
+        run: |
+          # 1. 清理Runner日志（核心解决报错目录）
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          sudo rm -rf /home/runner/_diag/* || true
+          
+          # 2. 清理系统大文件（释放10GB+空间）
+          sudo docker system prune -a -f || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y --purge
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          
+          # 3. 清理旧构建残留
+          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
+          sudo rm -rf /tmp/* /var/tmp/* || true
+          
+          # 验证清理结果
+          echo "===== 磁盘空间清理后状态 ====="
+          df -h
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -321,6 +360,8 @@ jobs:
           key: ${{ matrix.board }}-${{ matrix.suite }}-deb-cache-${{ hashFiles('config/boards/*.sh', 'config/suites/*.sh') }}
           restore-keys: |
             ${{ matrix.board }}-${{ matrix.suite }}-deb-cache-
+          enableCrossOsArchive: true
+          save-always: false
 
       - name: Create correct directories
         shell: bash
@@ -348,22 +389,14 @@ jobs:
           key: kernel-${{ matrix.board }}-${{ matrix.suite }}-${{ hashFiles('config/boards/*.sh', 'scripts/build-kernel.sh') }}
           restore-keys: |
             kernel-${{ matrix.board }}-${{ matrix.suite }}-
+          enableCrossOsArchive: true
+          save-always: false
 
-      #- name: Copy all built kernel debs into rootfs tmp
-      #  run: |
-      #    mkdir -p build/rootfs/tmp/
-      #    cp build/linux-*.deb build/rootfs/tmp/
-      #    ls -la ${{ github.workspace }}/build/rootfs/tmp
-
-      #- name: Install kernel headers and image by chroot (in rootfs)
-      #  run: |
-      #    sudo chroot build/rootfs dpkg -i /tmp/linux-*.deb || sudo chroot build/rootfs apt-get -fy install
-          
       - name: Build image
         shell: bash
         run: |
           cd ${{ github.workspace }}
-          sudo bash -x ./build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} 2>&1 | tee build-image.log
+          sudo bash ./build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} 2>&1 | tee build-image.log
 
       - name: Save build log (debug)
         uses: actions/upload-artifact@v4.3.3
@@ -390,6 +423,9 @@ jobs:
           compression-level: 6
           overwrite: false
 
-      - name: Clean cache
+      - name: 🧹 清理构建产物（释放空间）
         shell: bash
-        run: sync && sudo rm -rf ${{ github.workspace }}/images/ ${{ github.workspace }}/build/ && sync
+        run: |
+          sync && sudo rm -rf ${{ github.workspace }}/images/ ${{ github.workspace }}/build/ && sync
+          sync && echo 3 | sudo tee /proc/sys/vm/drop_caches || true
+          df -h
