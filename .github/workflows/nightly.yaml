@@ -5,15 +5,12 @@ on:
     - cron: "0 0 * * *"
   workflow_dispatch:
 
-# 全局构建目录变量（核心：只需修改这里即可切换构建目录）
 env:
   REPO_OWNER: xiaoyi1972
   REPO_NAME: ubuntu-rockchip
   RELEASE_TAG: workflow
   ROOTFS_FILE_PREFIX: ubuntu
   ROOTFS_ARCH: arm64
-  BUILD_DIR: /mnt/build       # 构建临时文件目录（可一键切换）
-  IMAGES_DIR: /mnt/images     # 镜像输出目录（可一键切换）
 
 jobs:
   config:
@@ -28,8 +25,6 @@ jobs:
           # 清理Runner日志和临时文件
           sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
           sudo rm -rf /tmp/* /var/tmp/* || true
-          # 清理全局构建目录旧残留（引用变量）
-          sudo rm -rf ${{ env.BUILD_DIR }}/* || true
           df -h
 
       - name: Checkout code
@@ -92,15 +87,13 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
           sudo rm -rf /var/lib/apt/lists/* || true
           
-          # 3. 清理全局构建目录旧残留（引用变量）
-          sudo rm -rf ${{ env.BUILD_DIR }}/* ${{ env.IMAGES_DIR }}/* || true
+          # 3. 清理旧构建残留
+          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
           sudo rm -rf /tmp/* /var/tmp/* || true
           
           # 验证清理结果
           echo "===== 磁盘空间清理后状态 ====="
           df -h
-          echo "===== 构建目录（${{ env.BUILD_DIR }}）所在分区状态 ====="
-          df -h $(dirname ${{ env.BUILD_DIR }})
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -108,14 +101,11 @@ jobs:
       - name: Debug - Env & Directory
         run: |
           echo "Workspace: $GITHUB_WORKSPACE"
-          echo "Build Directory: ${{ env.BUILD_DIR }}"
-          echo "Images Directory: ${{ env.IMAGES_DIR }}"
           echo "Matrix: suite=${{ matrix.suite }}, flavor=${{ matrix.flavor }}"
           pwd
           ls -la
           ls -la config/suites/
-          # 查看构建目录所在分区空间
-          df -h $(dirname ${{ env.BUILD_DIR }})
+          df -h
 
       - name: Set environment variables
         id: vars
@@ -162,12 +152,11 @@ jobs:
       - name: Download remote rootfs zip (if exists)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'true'
         run: |
-          # 引用全局构建目录变量
-          mkdir -p ${{ env.BUILD_DIR }}
-          wget -O ${{ env.BUILD_DIR }}/${{ steps.vars.outputs.rootfs_zip_name }} ${{ steps.vars.outputs.rootfs_download_url }}
-          ls -la ${{ env.BUILD_DIR }}/${{ steps.vars.outputs.rootfs_zip_name }}
-          unzip -o ${{ env.BUILD_DIR }}/${{ steps.vars.outputs.rootfs_zip_name }} -d ${{ env.BUILD_DIR }}/
-          ls -la ${{ env.BUILD_DIR }}/${{ steps.vars.outputs.rootfs_tar_name }} || { echo "Unzip failed"; exit 1; }
+          mkdir -p ${{ github.workspace }}/build
+          wget -O ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }} ${{ steps.vars.outputs.rootfs_download_url }}
+          ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }}
+          unzip -o ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_zip_name }} -d ${{ github.workspace }}/build/
+          ls -la ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }} || { echo "Unzip failed"; exit 1; }
 
       - name: Install full build dependencies (only if remote rootfs not found)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
@@ -200,20 +189,17 @@ jobs:
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
-          # 引用全局构建目录变量，统一管理路径
-          mkdir -p ${{ env.BUILD_DIR }}/chroot/etc/default
-          mkdir -p ${{ env.BUILD_DIR }}/rootfs/dev
-          sudo chmod 777 -R ${{ env.BUILD_DIR }}/chroot
-          sudo chmod 777 -R ${{ env.BUILD_DIR }}/rootfs
-          ls -la ${{ env.BUILD_DIR }}/
+          mkdir -p ${{ github.workspace }}/build/chroot/etc/default
+          mkdir -p ${{ github.workspace }}/build/rootfs/dev
+          sudo chmod 777 -R ${{ github.workspace }}/build/chroot
+          sudo chmod 777 -R ${{ github.workspace }}/build/rootfs
+          ls -la ${{ github.workspace }}/build/
 
       - name: Build rootfs (only if remote rootfs not found)
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         shell: bash
         run: |
           cd ${{ github.workspace }}
-          # 传递构建目录变量给build.sh（建议在build.sh中读取BUILD_DIR环境变量）
-          export BUILD_DIR=${{ env.BUILD_DIR }}
           sudo bash ./build.sh --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --rootfs-only 2>&1 | tee build-rootfs.log
 
       - name: Save build log (debug)
@@ -225,21 +211,20 @@ jobs:
 
       - name: Debug - Check rootfs file
         run: |
-          TARGET_FILE="${{ env.BUILD_DIR }}/${{ steps.vars.outputs.rootfs_tar_name }}"
+          TARGET_FILE="${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}"
           if [ -f "$TARGET_FILE" ]; then
             echo "✅ Rootfs file exists: $TARGET_FILE"
             du -h "$TARGET_FILE"
           else
             echo "❌ Rootfs file not found: $TARGET_FILE"
-            ls -la ${{ env.BUILD_DIR }}/
+            ls -la ${{ github.workspace }}/build/
             exit 1
           fi
 
       - name: Cache Rootfs
         uses: actions/cache@v3
         with:
-          # 引用全局构建目录变量
-          path: ${{ env.BUILD_DIR }}/${{ steps.vars.outputs.rootfs_tar_name }}
+          path: ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
           key: rootfs-${{ matrix.suite }}-${{ matrix.flavor }}-${{ hashFiles('config/suites/*.sh', 'config/flavors/*.sh') }}
           restore-keys: |
             rootfs-${{ matrix.suite }}-${{ matrix.flavor }}-
@@ -250,19 +235,18 @@ jobs:
         uses: actions/upload-artifact@v4.3.3
         with:
           name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs
-          # 引用全局构建目录变量
-          path: ${{ env.BUILD_DIR }}/${{ steps.vars.outputs.rootfs_tar_name }}
+          path: ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
           if-no-files-found: error
           compression-level: 6
           overwrite: false
 
       - name: 🧹 清理rootfs临时构建文件（释放空间）
         run: |
-          # 引用全局构建目录变量
-          sudo rm -rf ${{ env.BUILD_DIR }}/chroot || true
-          sudo rm -rf ${{ env.BUILD_DIR }}/rootfs || true
+          # 保留最终产物，删除临时文件
+          sudo rm -rf ${{ github.workspace }}/build/chroot || true
+          sudo rm -rf ${{ github.workspace }}/build/rootfs || true
           sync && echo 3 | sudo tee /proc/sys/vm/drop_caches || true
-          df -h $(dirname ${{ env.BUILD_DIR }})
+          df -h
 
   build:
     runs-on: ubuntu-22.04
@@ -286,15 +270,13 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
           sudo rm -rf /var/lib/apt/lists/* || true
           
-          # 3. 清理全局构建目录旧残留（引用变量）
-          sudo rm -rf ${{ env.BUILD_DIR }}/* ${{ env.IMAGES_DIR }}/* || true
+          # 3. 清理旧构建残留
+          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
           sudo rm -rf /tmp/* /var/tmp/* || true
           
           # 验证清理结果
           echo "===== 磁盘空间清理后状态 ====="
           df -h
-          echo "===== 构建目录（${{ env.BUILD_DIR }}）所在分区状态 ====="
-          df -h $(dirname ${{ env.BUILD_DIR }})
 
       - name: Checkout code
         uses: actions/checkout@v4
@@ -302,14 +284,11 @@ jobs:
       - name: Debug - Env & Directory
         run: |
           echo "Workspace: $GITHUB_WORKSPACE"
-          echo "Build Directory: ${{ env.BUILD_DIR }}"
-          echo "Images Directory: ${{ env.IMAGES_DIR }}"
           echo "Matrix: board=${{ matrix.board }}, suite=${{ matrix.suite }}, flavor=${{ matrix.flavor }}"
           pwd
           ls -la
           ls -la config/boards/
-          # 查看构建目录所在分区空间
-          df -h $(dirname ${{ env.BUILD_DIR }})
+          df -h
 
       - name: Set environment variables
         id: vars
@@ -358,12 +337,11 @@ jobs:
       - name: Download remote DEB zip (if exists)
         if: steps.check_remote_deb.outputs.deb_remote_exists == 'true'
         run: |
-          # 引用全局构建目录变量
-          mkdir -p ${{ env.BUILD_DIR }}
-          wget -O ${{ env.BUILD_DIR }}/${{ steps.deb-asset.outputs.deb_zip_name }} ${{ steps.deb-asset.outputs.deb_download_url }}
-          ls -la ${{ env.BUILD_DIR }}/${{ steps.deb-asset.outputs.deb_zip_name }}
-          unzip -o ${{ env.BUILD_DIR }}/${{ steps.deb-asset.outputs.deb_zip_name }} -d ${{ env.BUILD_DIR }}/
-          ls -la ${{ env.BUILD_DIR }}/*.deb || { echo "Unzip failed"; exit 1; }
+          mkdir -p ${{ github.workspace }}/build
+          wget -O ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }} ${{ steps.deb-asset.outputs.deb_download_url }}
+          ls -la ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }}
+          unzip -o ${{ github.workspace }}/build/${{ steps.deb-asset.outputs.deb_zip_name }} -d ${{ github.workspace }}/build/
+          ls -la ${{ github.workspace }}/build/*.deb || { echo "Unzip failed"; exit 1; }
 
       - name: Install full build dependencies
         shell: bash
@@ -378,9 +356,8 @@ jobs:
       - name: Cache Deb packages
         uses: actions/cache@v3
         with:
-          # 引用全局构建目录变量
           path: |
-            ${{ env.BUILD_DIR }}/*.deb
+            ${{ github.workspace }}/build/*.deb
             /var/cache/apt/archives/*.deb
           key: ${{ matrix.board }}-${{ matrix.suite }}-deb-cache-${{ hashFiles('config/boards/*.sh', 'config/suites/*.sh') }}
           restore-keys: |
@@ -391,29 +368,26 @@ jobs:
       - name: Create correct directories
         shell: bash
         run: |
-          # 引用全局构建/镜像目录变量，统一管理路径
-          mkdir -p ${{ env.IMAGES_DIR }}
-          mkdir -p ${{ env.BUILD_DIR }}
-          mkdir -p ${{ env.BUILD_DIR }}/chroot/etc/default
-          mkdir -p ${{ env.BUILD_DIR }}/rootfs/dev
-          sudo chmod 777 -R ${{ env.BUILD_DIR }}/chroot
-          sudo chmod 777 -R ${{ env.BUILD_DIR }}/rootfs
-          ls -la ${{ env.BUILD_DIR }}/
+          mkdir -p ${{ github.workspace }}/images
+          mkdir -p ${{ github.workspace }}/build
+          mkdir -p ${{ github.workspace }}/build/chroot/etc/default
+          mkdir -p ${{ github.workspace }}/build/rootfs/dev
+          sudo chmod 777 -R ${{ github.workspace }}/build/chroot
+          sudo chmod 777 -R ${{ github.workspace }}/build/rootfs
+          ls -la ${{ github.workspace }}/build/
 
       - name: Restore Rootfs Cache
         uses: actions/cache/restore@v3
         with:
-          # 引用全局构建目录变量
-          path: ${{ env.BUILD_DIR }}/${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}.rootfs.tar.xz
+          path: ${{ github.workspace }}/build/${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}.rootfs.tar.xz
           key: rootfs-${{ matrix.suite }}-${{ matrix.flavor }}-${{ hashFiles('config/suites/*.sh', 'config/flavors/*.sh') }}
 
       - name: Cache Kernel Build
         uses: actions/cache@v3
         with:
-          # 引用全局构建目录变量
           path: |
-            ${{ env.BUILD_DIR }}/kernel
-            ${{ env.BUILD_DIR }}/modules
+            ${{ github.workspace }}/build/kernel
+            ${{ github.workspace }}/build/modules
           key: kernel-${{ matrix.board }}-${{ matrix.suite }}-${{ hashFiles('config/boards/*.sh', 'scripts/build-kernel.sh') }}
           restore-keys: |
             kernel-${{ matrix.board }}-${{ matrix.suite }}-
@@ -424,9 +398,6 @@ jobs:
         shell: bash
         run: |
           cd ${{ github.workspace }}
-          # 传递构建/镜像目录变量给build.sh
-          export BUILD_DIR=${{ env.BUILD_DIR }}
-          export IMAGES_DIR=${{ env.IMAGES_DIR }}
           sudo bash ./build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} 2>&1 | tee build-image.log
 
       - name: Save build log (debug)
@@ -438,19 +409,18 @@ jobs:
 
       - name: Debug - Check image file generation
         run: |
-          echo "=== Images directory (${{ env.IMAGES_DIR }}) contents ==="
-          ls -la ${{ env.IMAGES_DIR }}/ || echo "Images directory not found"
-          ls -la ${{ env.BUILD_DIR }}/
+          echo "=== Images directory contents ==="
+          ls -la ${{ github.workspace }}/images/ || echo "Images directory not found"
+          ls -la ${{ github.workspace }}/build/
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4.3.3
         with:
           name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}
-          # 引用全局镜像目录变量
           path: |
-            ${{ env.IMAGES_DIR }}/${{ env.ROOTFS_FILE_PREFIX }}-*-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}.*
-            ${{ env.IMAGES_DIR }}/*.img
-            ${{ env.IMAGES_DIR }}/*.xz
+            ${{ github.workspace }}/images/${{ env.ROOTFS_FILE_PREFIX }}-*-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}.*
+            ${{ github.workspace }}/images/*.img
+            ${{ github.workspace }}/images/*.xz
           if-no-files-found: error
           compression-level: 6
           overwrite: false
@@ -458,7 +428,6 @@ jobs:
       - name: 🧹 清理构建产物（释放空间）
         shell: bash
         run: |
-          # 引用全局构建/镜像目录变量
-          sync && sudo rm -rf ${{ env.IMAGES_DIR }}/ ${{ env.BUILD_DIR }}/ && sync
+          sync && sudo rm -rf ${{ github.workspace }}/images/ ${{ github.workspace }}/build/ && sync
           sync && echo 3 | sudo tee /proc/sys/vm/drop_caches || true
-          df -h $(dirname ${{ env.BUILD_DIR }})
+          df -h
