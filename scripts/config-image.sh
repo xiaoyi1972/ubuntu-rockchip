@@ -149,6 +149,37 @@ else
         base_name=$(echo "$deb" | sed 's/_.*//')
         chroot "${chroot_dir}" apt-mark hold "${base_name}"
     done
+
+  # ===================== 新增：校验并生成 fixdep =====================
+    echo "=== 校验 kernel 编译工具 scripts/basic/fixdep ==="
+    # 从 kernel_debs 中提取内核版本（例如：6.1.0-1027-rockchip）
+    kernel_image_deb=$(echo "${kernel_debs[@]}" | grep -o "linux-image-.*\.deb" | head -n1)
+    kernel_version=$(echo "$kernel_image_deb" | sed -n 's/linux-image-\(.*\)_.*\.deb/\1/p')
+    headers_dir="/usr/src/linux-headers-${kernel_version}"
+
+    # 在 chroot 中执行校验+生成
+    chroot "${chroot_dir}" /bin/bash -c "
+        # 检查 fixdep 是否存在且可执行
+        if [ -x \"${headers_dir}/scripts/basic/fixdep\" ]; then
+            echo \"fixdep 已存在：${headers_dir}/scripts/basic/fixdep\"
+        else
+            echo \"fixdep 缺失，开始生成...\"
+            # 安装生成 fixdep 必需的依赖（若未安装）
+            apt-get install -y build-essential flex bison libssl-dev libelf-dev >/dev/null 2>&1
+            # 进入内核头文件目录，生成辅助脚本
+            cd \"${headers_dir}\" || { echo \"Error: 内核头文件目录不存在 ${headers_dir}\"; exit 1; }
+            make scripts >/dev/null 2>&1  # 静默生成（避免日志冗余）
+            # 验证生成结果
+            if [ -x \"scripts/basic/fixdep\" ]; then
+                chmod +x scripts/basic/fixdep
+                echo \"fixdep 生成成功：${headers_dir}/scripts/basic/fixdep\"
+            else
+                echo \"Error: fixdep 生成失败，请检查内核头文件完整性\"
+                exit 1
+            fi
+        fi
+    "
+    # ===================== 新增结束 =====================
 fi
 
 if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
@@ -159,27 +190,9 @@ chroot ${chroot_dir} update-initramfs -u
 chroot ${chroot_dir} apt-get -y clean
 chroot ${chroot_dir} apt-get -y autoclean
 chroot ${chroot_dir} apt-get -y autoremove
-
 teardown_mountpoint $chroot_dir
 
 # 核心打包+清理命令（优化日志+排除无用目录）
-#{
-#  cd "${chroot_dir}" && \
-#  tar --warning=no-file-changed \
-#      --exclude='./sys/*' \
-#      --exclude='./proc/*' \
-#      --exclude='./dev/*' \
-#      --exclude='./tmp/*' \
-#      --exclude='./run/*' \
-#      -cpf "../ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar" . 2> >(grep -v "warning" >&2) && \
-#  cd .. && \
-#  rm -rf "${chroot_dir}"  # 移除sudo，脚本已要求root运行，无需额外sudo
-#} || {
-  # 出错时清理目录+输出错误信息
-#  echo "ERROR: 打包rootfs失败，清理残留目录"
-#  rm -rf "${chroot_dir}"
-#  exit 1
-#}
 cd ${chroot_dir} && tar --warning=no-file-changed -cpf "../ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar" . && cd .. && rm -rf ${chroot_dir}
 ../scripts/build-image.sh "ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar"
 rm -f "ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64-${BOARD}.rootfs.tar"
