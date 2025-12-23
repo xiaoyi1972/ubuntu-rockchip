@@ -92,7 +92,7 @@ build_package_with() {
      fi
 }
 
-function config_image_hook__orangepi-5-max() {
+function config_image_hook__orangepi-5-max_other() {
     local rootfs="$1"
     local overlay="$2"
     local suite="$3"
