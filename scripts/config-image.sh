@@ -150,38 +150,6 @@ else
         chroot "${chroot_dir}" apt-mark hold "${base_name}"
     done
 
-  # ===================== 新增：校验并生成 fixdep =====================
-    echo "=== 校验 kernel 编译工具 scripts/basic/fixdep ==="
-    # 从 kernel_debs 中提取内核版本（例如：6.1.0-1027-rockchip）
-    kernel_image_deb=$(echo "${kernel_debs[@]}" | grep -o "linux-image-.*\.deb" | head -n1)
-    kernel_version=$(echo "$kernel_image_deb" | sed -n 's/linux-image-\(.*\)_.*\.deb/\1/p')
-    headers_dir="/usr/src/linux-headers-${kernel_version}"
-
-    # 在 chroot 中执行校验+生成
-    chroot "${chroot_dir}" /bin/bash -c "
-        # 检查 fixdep 是否存在且可执行
-        if [ -x \"${headers_dir}/scripts/basic/fixdep\" ]; then
-            echo \"fixdep 已存在：${headers_dir}/scripts/basic/fixdep\"
-        else
-            echo \"fixdep 缺失，开始生成...\"
-            # 安装生成 fixdep 必需的依赖（若未安装）
-            apt-get install -y build-essential flex bison libssl-dev libelf-dev >/dev/null 2>&1
-            # 进入内核头文件目录，生成辅助脚本
-            cd \"${headers_dir}\" || { echo \"Error: 内核头文件目录不存在 ${headers_dir}\"; exit 1; }
-            make scripts >/dev/null 2>&1  # 静默生成（避免日志冗余）
-            # 验证生成结果
-            if [ -x \"scripts/basic/fixdep\" ]; then
-                chmod +x scripts/basic/fixdep
-                echo \"fixdep 生成成功：${headers_dir}/scripts/basic/fixdep\"
-            else
-                echo \"Error: fixdep 生成失败，请检查内核头文件完整性\"
-                exit 1
-            fi
-        fi
-    "
-    # ===================== 新增结束 =====================
-fi
-
 if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
     config_image_hook__"${BOARD}" "${chroot_dir}" "${overlay_dir}" "${SUITE}"
 fi
