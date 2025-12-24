@@ -76,6 +76,17 @@ setup_mountpoint() {
     sed 's/systemd//g' nsswitch.conf.tmp > "$mountpoint/etc/nsswitch.conf"
 }
 
+configure_apt_sources() {
+    local root="$1"
+    local suite="$2"
+    cat <<EOF > "$root/etc/apt/sources.list"
+deb http://mirrors.aliyun.com/ubuntu/ ${suite} main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ ${suite}-updates main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ ${suite}-security main restricted universe multiverse
+deb http://mirrors.aliyun.com/ubuntu/ ${suite}-backports main restricted universe multiverse
+EOF
+}
+
 teardown_mountpoint() {
     local mountpoint
     mountpoint=$(realpath "$1")
@@ -98,6 +109,8 @@ rm -rf ${chroot_dir} && mkdir -p ${chroot_dir}
 tar -xpJf "ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz" -C ${chroot_dir}
 
 setup_mountpoint $chroot_dir
+
+configure_apt_sources "$chroot_dir" "${SUITE}"
 
 chroot $chroot_dir apt-get update
 chroot $chroot_dir apt-get -y upgrade
