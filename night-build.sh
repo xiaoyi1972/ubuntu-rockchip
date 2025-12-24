@@ -4,10 +4,10 @@ trap 'echo "Error at line $LINENO: $BASH_COMMAND"' ERR
 
 # ========================= 全局配置（可根据本地环境修改）=========================
 export REPO_OWNER="xiaoyi1972"
-export REPO_NAME="ubuntu-rockchip"
-export RELEASE_TAG="workflow"
-export ROOTFS_FILE_PREFIX="ubuntu"
-export ROOTFS_ARCH="arm64"
+export REPO_NAME=ubuntu-rockchip
+export RELEASE_TAG=workflow
+export ROOTFS_FILE_PREFIX=ubuntu
+export ROOTFS_ARCH=arm64
 export WORKSPACE=$(pwd)
 export CACHE_DIR="${WORKSPACE}/cache"
 export BUILD_DIR="${WORKSPACE}/build"
@@ -19,19 +19,35 @@ export LOGS_DIR="${WORKSPACE}/logs"
 export GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELEASE_TAG}"
 
 # ========================= 工具函数 =========================
-# 磁盘清理函数
+# 磁盘清理函数（保留build目录下的有效文件，仅清理临时/无用文件）
 clean_disk_space() {
     echo -e "\n===== 清理磁盘空间 ====="
+    # 仅清理系统临时文件，不删除build目录下的有效文件
     sudo rm -rf /tmp/* /var/tmp/* || true
     if command -v docker &> /dev/null; then
         sudo docker system prune -a -f || true
     fi
     sudo apt-get clean || true
     sudo apt-get autoremove -y --purge || true
-    sudo rm -rf "${BUILD_DIR:?}"/* "${IMAGES_DIR:?}"/* || true
+    # 仅清理images目录（镜像产物），保留build目录的rootfs/deb文件
+    sudo rm -rf "${IMAGES_DIR:?}"/* || true
+    # 释放内存缓存
     sync && echo 3 | sudo tee /proc/sys/vm/drop_caches || true
+    # 显示磁盘状态
     echo -e "\n===== 磁盘空间状态 ====="
     df -h
+}
+
+# 检查本地文件是否存在且有效（大小>0）
+check_local_file_exists() {
+    local file_path="$1"
+    if [ -f "${file_path}" ] && [ -s "${file_path}" ]; then
+        echo "true"
+        return 0
+    else
+        echo "false"
+        return 1
+    fi
 }
 
 # 检查远程Asset是否存在（处理GitHub 302重定向）
@@ -118,13 +134,13 @@ generate_matrices() {
     export BUILD_MATRIX
 }
 
-# ========================= RootFS构建函数 =========================
+# ========================= RootFS构建函数（本地文件优先）=========================
 build_rootfs() {
     local suite="$1"
     local flavor="$2"
     echo -e "\n===== 开始构建RootFS：${suite}-${flavor} =====\n"
 
-    # 1. 前置清理
+    # 1. 前置清理（保留build目录有效文件）
     clean_disk_space
 
     # 2. 加载suite配置
@@ -135,29 +151,58 @@ build_rootfs() {
     local rootfs_zip_path="${BUILD_DIR}/${rootfs_zip_name}"
     local rootfs_tar_path="${BUILD_DIR}/${rootfs_tar_name}"
 
-    # 3. 检查远程RootFS是否存在
-    local remote_exists=$(check_remote_asset_exists "${rootfs_zip_name}")
-    if [ "${remote_exists}" = "true" ]; then
-        # 下载并解压
-        if download_remote_asset "${rootfs_zip_name}" "${rootfs_zip_path}"; then
-            # 解压用sudo（解决权限问题）
+    # 3. 优先检查本地是否有已解压的tar文件（最终产物）
+    local local_tar_exists=$(check_local_file_exists "${rootfs_tar_path}")
+    if [ "${local_tar_exists}" = "true" ]; then
+        echo "本地已存在RootFS tar文件：${rootfs_tar_path}，直接复用"
+        remote_exists="false"
+    else
+        # 4. 检查本地是否有zip文件，有则尝试解压
+        local local_zip_exists=$(check_local_file_exists "${rootfs_zip_path}")
+        if [ "${local_zip_exists}" = "true" ]; then
+            echo "本地已存在RootFS zip文件：${rootfs_zip_path}，尝试解压"
             sudo unzip -o "${rootfs_zip_path}" -d "${BUILD_DIR}" || {
-                echo "解压远程RootFS失败，切换为本地构建"
-                remote_exists="false"
+                echo "本地zip文件解压失败，删除损坏文件并尝试远程下载"
+                sudo rm -f "${rootfs_zip_path}"
+                local_zip_exists="false"
             }
-            # 验证解压产物
-            if [ ! -f "${rootfs_tar_path}" ]; then
-                echo "远程RootFS解压后产物缺失，切换为本地构建"
+            # 解压后再次检查tar文件
+            local_tar_exists=$(check_local_file_exists "${rootfs_tar_path}")
+            if [ "${local_tar_exists}" = "true" ]; then
+                echo "本地zip解压成功，复用RootFS tar文件"
                 remote_exists="false"
             fi
-        else
-            echo "远程RootFS下载失败，切换为本地构建"
-            remote_exists="false"
+        fi
+
+        # 5. 本地无有效文件，检查远程并下载
+        if [ "${local_tar_exists}" = "false" ]; then
+            local remote_exists=$(check_remote_asset_exists "${rootfs_zip_name}")
+            if [ "${remote_exists}" = "true" ]; then
+                # 下载远程zip并解压
+                if download_remote_asset "${rootfs_zip_name}" "${rootfs_zip_path}"; then
+                    sudo unzip -o "${rootfs_zip_path}" -d "${BUILD_DIR}" || {
+                        echo "远程zip解压失败，切换为本地构建"
+                        remote_exists="false"
+                    }
+                    # 验证解压后的tar文件
+                    local_tar_exists=$(check_local_file_exists "${rootfs_tar_path}")
+                    if [ "${local_tar_exists}" != "true" ]; then
+                        echo "远程zip解压后无有效tar文件，切换为本地构建"
+                        remote_exists="false"
+                    fi
+                else
+                    echo "远程RootFS下载失败，切换为本地构建"
+                    remote_exists="false"
+                fi
+            else
+                echo "远程无RootFS文件，执行本地构建"
+                remote_exists="false"
+            fi
         fi
     fi
 
-    # 4. 本地构建RootFS
-    if [ "${remote_exists}" = "false" ]; then
+    # 6. 本地构建RootFS（仅当本地/远程都无有效文件时）
+    if [ "${local_tar_exists}" != "true" ] && [ "${remote_exists}" = "false" ]; then
         echo -e "\n===== 本地构建RootFS：${suite}-${flavor} ====="
         # 安装依赖
         sudo apt-get update && sudo apt-get upgrade -y
@@ -194,7 +239,7 @@ build_rootfs() {
         fi
     fi
 
-    # 5. 缓存RootFS
+    # 7. 缓存RootFS到cache目录
     echo -e "\n===== 缓存RootFS到本地 ====="
     sudo mkdir -p "${CACHE_DIR}/rootfs"
     sudo cp "${rootfs_tar_path}" "${CACHE_DIR}/rootfs/"
@@ -202,7 +247,7 @@ build_rootfs() {
     echo "RootFS缓存完成：${CACHE_DIR}/rootfs/${rootfs_tar_name}"
 }
 
-# ========================= 镜像构建函数 =========================
+# ========================= 镜像构建函数（本地文件优先）=========================
 build_image() {
     local board="$1"
     local suite="$2"
@@ -219,7 +264,8 @@ build_image() {
     local rootfs_tar_path="${CACHE_DIR}/rootfs/${rootfs_tar_name}"
 
     # 3. 检查RootFS缓存
-    if [ ! -f "${rootfs_tar_path}" ]; then
+    local rootfs_cache_exists=$(check_local_file_exists "${rootfs_tar_path}")
+    if [ "${rootfs_cache_exists}" != "true" ]; then
         echo "RootFS缓存不存在，请先构建RootFS：${rootfs_tar_path}"
         exit 1
     fi
@@ -227,25 +273,38 @@ build_image() {
     sudo cp "${rootfs_tar_path}" "${BUILD_DIR}/"
     sudo chmod 644 "${BUILD_DIR}/${rootfs_tar_name}"
 
-    # 4. 检查远程DEB包
+    # 4. 优先检查本地DEB包
     local deb_zip_name="deb-packages-${board}-${suite}.zip"
     local deb_zip_path="${BUILD_DIR}/${deb_zip_name}"
-    local deb_remote_exists=$(check_remote_asset_exists "${deb_zip_name}")
-    
-    if [ "${deb_remote_exists}" = "true" ]; then
-        # 下载并解压DEB包
-        if download_remote_asset "${deb_zip_name}" "${deb_zip_path}"; then
-            sudo unzip -o "${deb_zip_path}" -d "${BUILD_DIR}" || {
-                echo "解压远程DEB包失败，忽略DEB包复用"
+    local local_deb_zip_exists=$(check_local_file_exists "${deb_zip_path}")
+    local deb_remote_exists="false"
+
+    if [ "${local_deb_zip_exists}" = "true" ]; then
+        echo "本地已存在DEB zip文件：${deb_zip_path}，尝试解压"
+        sudo unzip -o "${deb_zip_path}" -d "${BUILD_DIR}" || {
+            echo "本地DEB zip解压失败，删除损坏文件并尝试远程下载"
+            sudo rm -f "${deb_zip_path}"
+            local_deb_zip_exists="false"
+        }
+    fi
+
+    # 5. 本地无DEB包，检查远程并下载
+    if [ "${local_deb_zip_exists}" != "true" ]; then
+        deb_remote_exists=$(check_remote_asset_exists "${deb_zip_name}")
+        if [ "${deb_remote_exists}" = "true" ]; then
+            if download_remote_asset "${deb_zip_name}" "${deb_zip_path}"; then
+                sudo unzip -o "${deb_zip_path}" -d "${BUILD_DIR}" || {
+                    echo "远程DEB包解压失败，忽略DEB包复用"
+                    deb_remote_exists="false"
+                }
+            else
+                echo "远程DEB包下载失败，忽略DEB包复用"
                 deb_remote_exists="false"
-            }
-        else
-            echo "远程DEB包下载失败，忽略DEB包复用"
-            deb_remote_exists="false"
+            fi
         fi
     fi
 
-    # 5. 安装镜像构建依赖
+    # 6. 安装镜像构建依赖
     echo -e "\n===== 安装镜像构建依赖 ====="
     sudo apt-get update && sudo apt-get upgrade -y
     sudo apt-get install -y \
@@ -254,20 +313,20 @@ build_image() {
         fdisk parted dosfstools uuid-runtime rsync kmod \
         gcc-aarch64-linux-gnu
 
-    # 6. 创建目录
+    # 7. 创建目录
     sudo mkdir -p "${IMAGES_DIR}"
     sudo mkdir -p "${BUILD_DIR}/chroot/etc/default"
     sudo mkdir -p "${BUILD_DIR}/rootfs/dev"
     sudo chmod 777 -R "${BUILD_DIR}/chroot"
     sudo chmod 777 -R "${BUILD_DIR}/rootfs"
 
-    # 7. 构建镜像
+    # 8. 构建镜像
     echo -e "\n===== 构建镜像：${board}-${suite}-${flavor} ====="
     cd "${WORKSPACE}"
     sudo bash ./build.sh --board="${board}" --suite="${suite}" --flavor="${flavor}" 2>&1 | tee "${LOGS_DIR}/image-build-${board}-${suite}-${flavor}.log"
 
-    # 8. 打包DEB包（仅当远程不存在时）
-    if [ "${deb_remote_exists}" = "false" ]; then
+    # 9. 打包DEB包（仅当本地/远程都无有效DEB包时）
+    if [ "${local_deb_zip_exists}" != "true" ] && [ "${deb_remote_exists}" = "false" ]; then
         echo -e "\n===== 打包DEB包（本地留存） ====="
         sudo mkdir -p "${RELEASES_DIR}"
         cd "${BUILD_DIR}"
@@ -279,7 +338,7 @@ build_image() {
         fi
     fi
 
-    # 9. 检查镜像产物
+    # 10. 检查镜像产物
     echo -e "\n===== 镜像构建完成，产物列表 ====="
     ls -la "${IMAGES_DIR}/" || echo "镜像目录不存在"
 }
