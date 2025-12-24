@@ -1,294 +1,322 @@
 #!/bin/bash
-set -euo pipefail  # 严格模式：出错立即退出、未定义变量报错、管道失败触发退出
+set -euo pipefail
+trap 'echo "Error at line $LINENO: $BASH_COMMAND"' ERR
 
-# ===================== 核心配置项（可根据实际环境调整）=====================
-# 仓库根目录（脚本需放在仓库根目录运行，或手动指定绝对路径）
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# 产物保存目录（替代 GitHub Action 的 Artifact）
-ARTIFACT_DIR="${REPO_ROOT}/artifacts"
-# 构建临时目录
-BUILD_DIR="${REPO_ROOT}/build"
-IMAGE_DIR="${REPO_ROOT}/images"
-# Ubuntu 源镜像（国内用户建议改为阿里云/清华源）
-UBUNTU_MIRROR="http://archive.ubuntu.com/ubuntu/"
-# UBUNTU_MIRROR="https://mirrors.aliyun.com/ubuntu/"  # 国内镜像（可选）
+# ========================= 全局配置（可根据本地环境修改）=========================
+export REPO_OWNER="xiaoyi1972"
+export REPO_NAME="ubuntu-rockchip"
+export RELEASE_TAG="workflow"
+export ROOTFS_FILE_PREFIX="ubuntu"
+export ROOTFS_ARCH="arm64"
+export WORKSPACE=$(pwd)
+export CACHE_DIR="${WORKSPACE}/cache"
+export BUILD_DIR="${WORKSPACE}/build"
+export IMAGES_DIR="${WORKSPACE}/images"
+export RELEASES_DIR="${WORKSPACE}/releases"
+export LOGS_DIR="${WORKSPACE}/logs"
 
-# ===================== 工具函数 =====================
-# 带时间戳的日志打印
-log() {
-    echo -e "\033[32m[$(date +%Y-%m-%d\ %H:%M:%S)] $1\033[0m"
+# GitHub Release Asset检查基础URL
+export GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELEASE_TAG}"
+
+# ========================= 工具函数 =========================
+# 磁盘清理函数
+clean_disk_space() {
+    echo -e "\n===== 清理磁盘空间 ====="
+    sudo rm -rf /tmp/* /var/tmp/* || true
+    if command -v docker &> /dev/null; then
+        sudo docker system prune -a -f || true
+    fi
+    sudo apt-get clean || true
+    sudo apt-get autoremove -y --purge || true
+    sudo rm -rf "${BUILD_DIR:?}"/* "${IMAGES_DIR:?}"/* || true
+    sync && echo 3 | sudo tee /proc/sys/vm/drop_caches || true
+    echo -e "\n===== 磁盘空间状态 ====="
+    df -h
 }
 
-# 错误打印并退出
-error() {
-    echo -e "\033[31m[$(date +%Y-%m-%d\ %H:%M:%S)] $1\033[0m"
-    exit 1
-}
-
-# 检查命令是否存在
-check_command() {
-    if ! command -v "$1" &> /dev/null; then
-        error "核心命令 '$1' 未找到，请先安装"
+# 检查远程Asset是否存在（处理GitHub 302重定向）
+check_remote_asset_exists() {
+    local asset_name="$1"
+    local download_url="${GITHUB_RELEASE_DOWNLOAD_BASE}/${asset_name}"
+    
+    # -L：跟随重定向；-s：静默模式；-o /dev/null：丢弃响应体；-w：输出状态码；--max-time：超时10秒
+    local http_code=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 10 "${download_url}")
+    # GitHub资产存在：最终状态码为200；不存在：404；权限问题：403（也视为存在）
+    if [ "${http_code}" = "200" ] || [ "${http_code}" = "403" ]; then
+        echo "true"
+        return 0
+    else
+        echo "false"
+        return 1
     fi
 }
 
-# ===================== 步骤1：前置检查 =====================
-log "===== 【步骤1/10】前置环境检查 ====="
-# 检查脚本运行目录（必须存在 build.sh）
-if [ ! -f "${REPO_ROOT}/build.sh" ]; then
-    error "未找到核心构建脚本 build.sh，请确保脚本在仓库根目录运行"
-fi
+# 下载远程Asset（取消静默模式，保留下载进度输出）
+download_remote_asset() {
+    local asset_name="$1"
+    local save_path="$2"
+    local download_url="${GITHUB_RELEASE_DOWNLOAD_BASE}/${asset_name}"
+    local save_dir=$(dirname "${save_path}")
+    
+    echo "开始下载远程文件：${asset_name}"
+    # 1. 确保保存目录存在且有写入权限
+    sudo mkdir -p "${save_dir}"
+    sudo chmod 777 "${save_dir}"
+    
+    # 2. 取消-q（静默模式），保留下载进度输出；-L：跟随重定向；-T：超时300秒；-O：输出到指定文件
+    sudo wget -L -T 300 -O "${save_path}" "${download_url}" || {
+        echo "下载失败：${download_url}"
+        sudo rm -f "${save_path}"  # 清理失败的空文件
+        return 1
+    }
+    
+    # 3. 验证文件是否下载成功（大小>0）
+    if [ ! -s "${save_path}" ]; then
+        echo "下载的文件为空：${save_path}"
+        sudo rm -f "${save_path}"
+        return 1
+    fi
+    
+    # 4. 修复下载文件的权限（方便后续使用）
+    sudo chmod 644 "${save_path}"
+    echo "下载完成：${save_path}"
+    return 0
+}
 
-# 检查核心依赖命令
-check_command "sudo"
-check_command "apt-get"
-check_command "bash"
-check_command "wget"
-check_command "sed"
-
-# 创建必要目录
-mkdir -p "${ARTIFACT_DIR}" "${BUILD_DIR}" "${IMAGE_DIR}"
-log "已创建工作目录：ARTIFACT_DIR=${ARTIFACT_DIR}, BUILD_DIR=${BUILD_DIR}"
-
-# ===================== 步骤2：清理磁盘空间（WSL2 适配）=====================
-log "===== 【步骤2/10】清理磁盘空间 ====="
-# 清理系统冗余包和缓存
-sudo apt-get autoremove -y --purge || log "::warning:: apt-get autoremove 失败，继续执行"
-sudo apt-get clean -y || log "::warning:: apt-get clean 失败，继续执行"
-sudo rm -rf /var/cache/apt/* /var/lib/apt/lists/* || log "::warning:: 删除 apt 缓存失败，继续执行"
-# 清理 swap（可选，释放磁盘）
-sudo swapoff -a || log "swap 清理失败，忽略"
-sudo rm -rf /swapfile || log "swap 文件不存在，忽略"
-log "磁盘空间清理完成"
-
-# ===================== 步骤3：生成构建矩阵（替代 GitHub Action 的 config Job）=====================
-log "===== 【步骤3/10】生成构建矩阵 ====="
-# 矩阵文件路径
-BUILD_MATRIX_FILE="${ARTIFACT_DIR}/build_matrix.txt"
-ROOTFS_MATRIX_FILE="${ARTIFACT_DIR}/rootfs_matrix.txt"
-# 清空旧矩阵文件
-> "${BUILD_MATRIX_FILE}"
-> "${ROOTFS_MATRIX_FILE}"
-
-# 生成 rootfs 矩阵（suite + flavor）
-log "生成 rootfs 矩阵（suite × flavor）"
-for suite_sh in "${REPO_ROOT}/config/suites/"*.sh; do
-    [ -f "${suite_sh}" ] || continue  # 跳过空目录/非文件
-    suite=$(basename "${suite_sh%.sh}")
-    for flavor_sh in "${REPO_ROOT}/config/flavors/"*.sh; do
-        [ -f "${flavor_sh}" ] || continue
-        flavor=$(basename "${flavor_sh%.sh}")
-        echo "${suite}|${flavor}" >> "${ROOTFS_MATRIX_FILE}"
-    done
-done
-
-# 生成 build 矩阵（board + suite + flavor）
-log "生成 build 矩阵（board × suite × flavor）"
-for board_sh in "${REPO_ROOT}/config/boards/"*.sh; do
-    [ -f "${board_sh}" ] || continue
-    board=$(basename "${board_sh%.sh}")
-    # 加载板卡配置的兼容套件/风味
-    COMPATIBLE_SUITES=()
-    COMPATIBLE_FLAVORS=()
-    # shellcheck disable=SC1090
-    source "${board_sh}" || error "加载板卡配置 ${board_sh} 失败"
-    # 拼接矩阵
-    for suite in "${COMPATIBLE_SUITES[@]}"; do
-        for flavor in "${COMPATIBLE_FLAVORS[@]}"; do
-            echo "${board}|${suite}|${flavor}" >> "${BUILD_MATRIX_FILE}"
+# 生成构建矩阵
+generate_matrices() {
+    echo -e "\n===== 生成RootFS构建矩阵 ====="
+    ROOTFS_MATRIX=()
+    for suite in "${WORKSPACE}/config/suites"/*.sh; do
+        [ -f "$suite" ] || continue
+        suite_name=$(basename "${suite%.sh}")
+        for flavor in "${WORKSPACE}/config/flavors"/*.sh; do
+            [ -f "$flavor" ] || continue
+            flavor_name=$(basename "${flavor%.sh}")
+            ROOTFS_MATRIX+=("${suite_name}|${flavor_name}")
+            echo "RootFS任务：suite=${suite_name}, flavor=${flavor_name}"
         done
     done
-done
 
-# 检查矩阵非空
-if [ ! -s "${ROOTFS_MATRIX_FILE}" ]; then
-    error "rootfs 矩阵为空！请检查 config/suites 或 config/flavors 目录"
-fi
-if [ ! -s "${BUILD_MATRIX_FILE}" ]; then
-    error "build 矩阵为空！请检查 config/boards 目录"
-fi
-log "矩阵生成完成：rootfs 组合数=$(wc -l < "${ROOTFS_MATRIX_FILE}"), build 组合数=$(wc -l < "${BUILD_MATRIX_FILE}")"
+    echo -e "\n===== 生成镜像构建矩阵 ====="
+    BUILD_MATRIX=()
+    for board in "${WORKSPACE}/config/boards"/*.sh; do
+        [ -f "$board" ] || continue
+        board_name=$(basename "${board%.sh}")
+        COMPATIBLE_SUITES=()
+        COMPATIBLE_FLAVORS=()
+        source "$board" || { echo "加载board配置失败：$board"; exit 1; }
+        for suite in "${COMPATIBLE_SUITES[@]}"; do
+            for flavor in "${COMPATIBLE_FLAVORS[@]}"; do
+                BUILD_MATRIX+=("${board_name}|${suite}|${flavor}")
+                echo "镜像任务：board=${board_name}, suite=${suite}, flavor=${flavor}"
+            done
+        done
+    done
 
-# ===================== 步骤4：安装构建依赖（Ubuntu 24.04 适配）=====================
-log "===== 【步骤4/10】安装构建依赖 ====="
-# 启用 universe 仓库（必要依赖所在）
-sudo add-apt-repository -y universe
-# 替换 apt 源（可选，国内用户启用）
-if [ "${UBUNTU_MIRROR}" != "http://archive.ubuntu.com/ubuntu/" ]; then
-    sudo sed -i "s|http://archive.ubuntu.com/ubuntu/|${UBUNTU_MIRROR}|g" /etc/apt/sources.list
-    log "已替换 apt 镜像源为：${UBUNTU_MIRROR}"
-fi
-sudo apt-get update -y
+    export ROOTFS_MATRIX
+    export BUILD_MATRIX
+}
 
-# 安装核心依赖（适配 24.04，替换废弃包名）
-sudo apt-get install -y \
-    build-essential gcc-aarch64-linux-gnu bison \
-    qemu-user-static qemu-system-arm qemu-efi-arm u-boot-tools binfmt-support \
-    debootstrap flex libssl-dev bc rsync kmod cpio xz-utils fakeroot parted \
-    udev dosfstools uuid-runtime git-lfs device-tree-compiler python3 \
-    python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
-    python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools wget live-build
+# ========================= RootFS构建函数 =========================
+build_rootfs() {
+    local suite="$1"
+    local flavor="$2"
+    echo -e "\n===== 开始构建RootFS：${suite}-${flavor} =====\n"
 
-# 解决 python3-distutils 依赖（24.04 替代方案）
-if ! python3 -c "import distutils" &> /dev/null; then
-    log "补充安装 distutils 兼容层"
-    sudo pip3 install setuptools==65.5.0
-    sudo ln -s /usr/lib/python3/dist-packages/pkg_resources /usr/lib/python3/dist-packages/distutils || true
-fi
-log "依赖安装完成"
+    # 1. 前置清理
+    clean_disk_space
 
-# ===================== 步骤5：预处理修复（解决 Seeds URL/缺失文件问题）=====================
-log "===== 【步骤5/10】预处理修复（适配 Ubuntu 源变更）====="
-# 1. 补充缺失的 extra-ppas.pref.chroot 文件
-mkdir -p "${REPO_ROOT}/config/archives"
-touch "${REPO_ROOT}/config/archives/extra-ppas.pref.chroot"
-# 添加默认 PPA 优先级配置（避免警告）
-cat > "${REPO_ROOT}/config/archives/extra-ppas.pref.chroot" << EOF
-Package: *
-Pin: release o=LP-PPA-*
-Pin-Priority: 500
-EOF
-log "已创建缺失文件：config/archives/extra-ppas.pref.chroot"
+    # 2. 加载suite配置
+    source "${WORKSPACE}/config/suites/${suite}.sh" || { echo "加载suite配置失败"; exit 1; }
+    local suite_version="${RELEASE_VERSION}"
+    local rootfs_zip_name="${ROOTFS_FILE_PREFIX}-${suite_version}-preinstalled-${flavor}-${ROOTFS_ARCH}-rootfs.zip"
+    local rootfs_tar_name="${ROOTFS_FILE_PREFIX}-${suite_version}-preinstalled-${flavor}-${ROOTFS_ARCH}.rootfs.tar.xz"
+    local rootfs_zip_path="${BUILD_DIR}/${rootfs_zip_name}"
+    local rootfs_tar_path="${BUILD_DIR}/${rootfs_tar_name}"
 
-# 2. 替换 build-rootfs.sh 中的失效 Seeds URL
-BUILD_ROOTFS_SH="${REPO_ROOT}/scripts/build-rootfs.sh"
-if [ -f "${BUILD_ROOTFS_SH}" ]; then
-    # 替换旧 URL 为 Launchpad 镜像
-    sed -i 's|https://ubuntu-archive-team.ubuntu.com/seeds/|https://git.launchpad.net/ubuntu-seeds/plain/|g' "${BUILD_ROOTFS_SH}"
-    # 补充 git 分支参数（适配 Launchpad 路径）
-    sed -i 's|/boot|/boot?h=ubuntu/\${SUITE}|g' "${BUILD_ROOTFS_SH}"
-    log "已修复 build-rootfs.sh 中的 Seeds URL"
-else
-    log "警告：未找到 build-rootfs.sh，跳过 URL 替换"
-fi
-
-# ===================== 步骤6：安装 Python2.7（Ubuntu 24.04 源码编译）=====================
-log "===== 【步骤6/10】安装 Python2.7（适配 24.04）====="
-if command -v python2 &> /dev/null; then
-    # 已安装 Python2，跳过编译
-    PY2_VERSION=$(python2 --version 2>&1 | awk '{print $2}')
-    if [[ "${PY2_VERSION}" == 2.7.* ]]; then
-        log "系统已安装 Python2.7（版本：${PY2_VERSION}），跳过编译"
-    else
-        error "Python2 版本错误（要求 2.7.x），当前：${PY2_VERSION}"
+    # 3. 检查远程RootFS是否存在
+    local remote_exists=$(check_remote_asset_exists "${rootfs_zip_name}")
+    if [ "${remote_exists}" = "true" ]; then
+        # 下载并解压
+        if download_remote_asset "${rootfs_zip_name}" "${rootfs_zip_path}"; then
+            # 解压用sudo（解决权限问题）
+            sudo unzip -o "${rootfs_zip_path}" -d "${BUILD_DIR}" || {
+                echo "解压远程RootFS失败，切换为本地构建"
+                remote_exists="false"
+            }
+            # 验证解压产物
+            if [ ! -f "${rootfs_tar_path}" ]; then
+                echo "远程RootFS解压后产物缺失，切换为本地构建"
+                remote_exists="false"
+            fi
+        else
+            echo "远程RootFS下载失败，切换为本地构建"
+            remote_exists="false"
+        fi
     fi
-else
-    # 源码编译安装 Python2.7.18
-    log "开始编译安装 Python2.7.18（Ubuntu 24.04 无官方包）"
-    # 安装编译依赖
-    sudo apt-get install -y build-essential libssl-dev libffi-dev zlib1g-dev \
-        libncurses5-dev libreadline6-dev libsqlite3-dev libbz2-dev
 
-    # 下载源码
-    PY2_VERSION="2.7.18"
-    PY2_TAR="Python-${PY2_VERSION}.tgz"
-    PY2_URL="https://www.python.org/ftp/python/${PY2_VERSION}/${PY2_TAR}"
-    wget -q "${PY2_URL}" -O "/tmp/${PY2_TAR}" || error "下载 Python2 源码失败"
+    # 4. 本地构建RootFS
+    if [ "${remote_exists}" = "false" ]; then
+        echo -e "\n===== 本地构建RootFS：${suite}-${flavor} ====="
+        # 安装依赖
+        sudo apt-get update && sudo apt-get upgrade -y
+        sudo apt-get install -y \
+            build-essential gcc-aarch64-linux-gnu bison \
+            qemu-user-static qemu-system-arm qemu-efi u-boot-tools binfmt-support \
+            debootstrap flex libssl-dev bc rsync kmod cpio xz-utils fakeroot parted \
+            udev dosfstools uuid-runtime git-lfs device-tree-compiler python2 python3 \
+            python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
+            python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools \
+            opencl-c-headers ocl-icd-opencl-dev dmraid libgpgme11-dev \
+            live-build ubuntu-keyring \
+            gcc-aarch64-linux-gnu
+        sudo update-binfmts --enable qemu-aarch64
 
-    # 编译安装
-    mkdir -p /tmp/python2-build
-    tar xf "/tmp/${PY2_TAR}" -C /tmp/python2-build --strip-components=1
-    cd /tmp/python2-build
-    ./configure --prefix=/usr/local/python2 --enable-unicode=ucs4 --enable-shared
-    make -j"$(nproc)"  # 多核编译加速
-    sudo make install
+        # 添加执行权限
+        chmod +x "${WORKSPACE}/build.sh"
+        chmod +x "${WORKSPACE}/scripts"/*.sh
 
-    # 创建软链接
-    sudo ln -s /usr/local/python2/bin/python2.7 /usr/bin/python2
-    sudo ln -s /usr/local/python2/bin/pip2.7 /usr/bin/pip2
+        # 创建目录
+        sudo mkdir -p "${BUILD_DIR}/chroot/etc/default"
+        sudo mkdir -p "${BUILD_DIR}/rootfs/dev"
+        sudo chmod 777 -R "${BUILD_DIR}/chroot"
+        sudo chmod 777 -R "${BUILD_DIR}/rootfs"
 
-    # 配置动态库
-    echo "/usr/local/python2/lib" | sudo tee /etc/ld.so.conf.d/python2.conf
-    sudo ldconfig
+        # 执行构建
+        cd "${WORKSPACE}"
+        sudo bash ./build.sh --suite="${suite}" --flavor="${flavor}" --rootfs-only 2>&1 | tee "${LOGS_DIR}/rootfs-build-${suite}-${flavor}.log"
 
-    # 清理临时文件
-    cd -
-    sudo rm -rf /tmp/python2-build /tmp/${PY2_TAR}
-
-    # 验证安装
-    if ! command -v python2 &> /dev/null; then
-        error "Python2.7 编译安装失败"
+        # 检查产物
+        if [ ! -f "${rootfs_tar_path}" ]; then
+            echo "RootFS构建失败：未找到产物 ${rootfs_tar_path}"
+            exit 1
+        fi
     fi
-    log "Python2.7 安装成功：$(python2 --version)"
-fi
 
-# ===================== 步骤7：构建根文件系统（替代 GitHub Action 的 rootfs Job）=====================
-log "===== 【步骤7/10】构建根文件系统（RootFS）====="
-while IFS="|" read -r suite flavor; do
-    [ -z "${suite}" ] || [ -z "${flavor}" ] && continue  # 跳过空行
-    log "开始构建 RootFS：suite=${suite}, flavor=${flavor}"
+    # 5. 缓存RootFS
+    echo -e "\n===== 缓存RootFS到本地 ====="
+    sudo mkdir -p "${CACHE_DIR}/rootfs"
+    sudo cp "${rootfs_tar_path}" "${CACHE_DIR}/rootfs/"
+    sudo chmod 644 "${CACHE_DIR}/rootfs/${rootfs_tar_name}"
+    echo "RootFS缓存完成：${CACHE_DIR}/rootfs/${rootfs_tar_name}"
+}
 
-    # 加载套件版本号
-    # shellcheck disable=SC1090
-    source "${REPO_ROOT}/config/suites/${suite}.sh" || error "加载套件配置 ${suite}.sh 失败"
-    suite_version="${RELEASE_VERSION:-unknown}"
-    log "套件 ${suite} 版本：${suite_version}"
+# ========================= 镜像构建函数 =========================
+build_image() {
+    local board="$1"
+    local suite="$2"
+    local flavor="$3"
+    echo -e "\n===== 开始构建镜像：${board}-${suite}-${flavor} =====\n"
 
-    # 执行根文件系统构建
-    sudo "${REPO_ROOT}/build.sh" \
-        --suite="${suite}" \
-        --flavor="${flavor}" \
-        --rootfs-only \
-        --launchpad || error "RootFS 构建失败：${suite}-${flavor}"
+    # 1. 前置清理
+    clean_disk_space
 
-    # 保存产物到 Artifact 目录
-    rootfs_file="${BUILD_DIR}/ubuntu-${suite_version}-preinstalled-${flavor}-arm64.rootfs.tar.xz"
-    if [ ! -f "${rootfs_file}" ]; then
-        error "RootFS 产物缺失：${rootfs_file}"
+    # 2. 加载suite配置
+    source "${WORKSPACE}/config/suites/${suite}.sh" || { echo "加载suite配置失败"; exit 1; }
+    local suite_version="${RELEASE_VERSION}"
+    local rootfs_tar_name="${ROOTFS_FILE_PREFIX}-${suite_version}-preinstalled-${flavor}-${ROOTFS_ARCH}.rootfs.tar.xz"
+    local rootfs_tar_path="${CACHE_DIR}/rootfs/${rootfs_tar_name}"
+
+    # 3. 检查RootFS缓存
+    if [ ! -f "${rootfs_tar_path}" ]; then
+        echo "RootFS缓存不存在，请先构建RootFS：${rootfs_tar_path}"
+        exit 1
     fi
-    cp -f "${rootfs_file}" "${ARTIFACT_DIR}/"
-    log "RootFS 产物已保存：${ARTIFACT_DIR}/$(basename "${rootfs_file}")"
-done < "${ROOTFS_MATRIX_FILE}"
-log "所有 RootFS 构建完成"
+    sudo mkdir -p "${BUILD_DIR}"
+    sudo cp "${rootfs_tar_path}" "${BUILD_DIR}/"
+    sudo chmod 644 "${BUILD_DIR}/${rootfs_tar_name}"
 
-# ===================== 步骤8：构建板卡镜像（替代 GitHub Action 的 build Job）=====================
-log "===== 【步骤8/10】构建板卡专属镜像 ====="
-while IFS="|" read -r board suite flavor; do
-    [ -z "${board}" ] || [ -z "${suite}" ] || [ -z "${flavor}" ] && continue
-    log "开始构建镜像：board=${board}, suite=${suite}, flavor=${flavor}"
-
-    # 加载套件版本号
-    # shellcheck disable=SC1090
-    source "${REPO_ROOT}/config/suites/${suite}.sh" || error "加载套件配置 ${suite}.sh 失败"
-    suite_version="${RELEASE_VERSION:-unknown}"
-
-    # 复制 RootFS 产物到构建目录
-    rootfs_artifact="${ARTIFACT_DIR}/ubuntu-${suite_version}-preinstalled-${flavor}-arm64.rootfs.tar.xz"
-    if [ ! -f "${rootfs_artifact}" ]; then
-        error "RootFS 产物缺失：${rootfs_artifact}"
+    # 4. 检查远程DEB包
+    local deb_zip_name="deb-packages-${board}-${suite}.zip"
+    local deb_zip_path="${BUILD_DIR}/${deb_zip_name}"
+    local deb_remote_exists=$(check_remote_asset_exists "${deb_zip_name}")
+    
+    if [ "${deb_remote_exists}" = "true" ]; then
+        # 下载并解压DEB包
+        if download_remote_asset "${deb_zip_name}" "${deb_zip_path}"; then
+            sudo unzip -o "${deb_zip_path}" -d "${BUILD_DIR}" || {
+                echo "解压远程DEB包失败，忽略DEB包复用"
+                deb_remote_exists="false"
+            }
+        else
+            echo "远程DEB包下载失败，忽略DEB包复用"
+            deb_remote_exists="false"
+        fi
     fi
-    cp -f "${rootfs_artifact}" "${BUILD_DIR}/"
 
-    # 执行镜像构建
-    sudo "${REPO_ROOT}/build.sh" \
-        --board="${board}" \
-        --suite="${suite}" \
-        --flavor="${flavor}" \
-        --launchpad || error "镜像构建失败：${board}-${suite}-${flavor}"
+    # 5. 安装镜像构建依赖
+    echo -e "\n===== 安装镜像构建依赖 ====="
+    sudo apt-get update && sudo apt-get upgrade -y
+    sudo apt-get install -y \
+        build-essential device-tree-compiler u-boot-tools \
+        qemu-user-static binfmt-support debootstrap \
+        fdisk parted dosfstools uuid-runtime rsync kmod \
+        gcc-aarch64-linux-gnu
 
-    # 保存镜像产物
-    image_pattern="${IMAGE_DIR}/ubuntu-*-preinstalled-${flavor}-arm64-${board}.*"
-    if ! ls ${image_pattern} &> /dev/null; then
-        error "镜像产物缺失：${image_pattern}"
+    # 6. 创建目录
+    sudo mkdir -p "${IMAGES_DIR}"
+    sudo mkdir -p "${BUILD_DIR}/chroot/etc/default"
+    sudo mkdir -p "${BUILD_DIR}/rootfs/dev"
+    sudo chmod 777 -R "${BUILD_DIR}/chroot"
+    sudo chmod 777 -R "${BUILD_DIR}/rootfs"
+
+    # 7. 构建镜像
+    echo -e "\n===== 构建镜像：${board}-${suite}-${flavor} ====="
+    cd "${WORKSPACE}"
+    sudo bash ./build.sh --board="${board}" --suite="${suite}" --flavor="${flavor}" 2>&1 | tee "${LOGS_DIR}/image-build-${board}-${suite}-${flavor}.log"
+
+    # 8. 打包DEB包（仅当远程不存在时）
+    if [ "${deb_remote_exists}" = "false" ]; then
+        echo -e "\n===== 打包DEB包（本地留存） ====="
+        sudo mkdir -p "${RELEASES_DIR}"
+        cd "${BUILD_DIR}"
+        if ls ./*.deb 1> /dev/null 2>&1; then
+            sudo zip "${RELEASES_DIR}/${deb_zip_name}" ./*.deb
+            echo "DEB包打包完成（本地留存）：${RELEASES_DIR}/${deb_zip_name}"
+        else
+            echo "无DEB包需要打包"
+        fi
     fi
-    cp -f ${image_pattern} "${ARTIFACT_DIR}/"
-    log "镜像产物已保存：${ARTIFACT_DIR}/$(basename ${image_pattern})"
 
-    # 清理当前板卡临时文件
-    sudo rm -rf "${BUILD_DIR}/"* "${IMAGE_DIR}/"*
-    sync
-done < "${BUILD_MATRIX_FILE}"
-log "所有板卡镜像构建完成"
+    # 9. 检查镜像产物
+    echo -e "\n===== 镜像构建完成，产物列表 ====="
+    ls -la "${IMAGES_DIR}/" || echo "镜像目录不存在"
+}
 
-# ===================== 步骤9：最终清理 =====================
-log "===== 【步骤9/10】最终清理 ====="
-sudo rm -rf "${BUILD_DIR}" "${IMAGE_DIR}"
-sudo apt-get autoremove -y
-sudo apt-get clean -y
-log "临时文件清理完成"
+# ========================= 主执行逻辑 =========================
+main() {
+    # 创建必要目录（加sudo确保权限）
+    sudo mkdir -p "${CACHE_DIR}" "${BUILD_DIR}" "${IMAGES_DIR}" "${RELEASES_DIR}" "${LOGS_DIR}"
+    sudo chmod 777 -R "${CACHE_DIR}" "${BUILD_DIR}" "${IMAGES_DIR}" "${RELEASES_DIR}" "${LOGS_DIR}"
 
-# ===================== 步骤10：构建完成 =====================
-log "===== 【步骤10/10】构建全部完成 ====="
-log "所有产物已保存到：${ARTIFACT_DIR}"
-ls -lh "${ARTIFACT_DIR}"
-log "脚本执行完毕，无异常"
+    # 生成构建矩阵
+    generate_matrices
+
+    # 构建所有RootFS
+    echo -e "\n====================================="
+    echo "开始批量构建RootFS"
+    echo "====================================="
+    for item in "${ROOTFS_MATRIX[@]}"; do
+        IFS="|" read -r suite flavor <<< "$item"
+        build_rootfs "${suite}" "${flavor}"
+    done
+
+    # 构建所有镜像
+    echo -e "\n====================================="
+    echo "开始批量构建镜像"
+    echo "====================================="
+    for item in "${BUILD_MATRIX[@]}"; do
+        IFS="|" read -r board suite flavor <<< "$item"
+        build_image "${board}" "${suite}" "${flavor}"
+    done
+
+    echo -e "\n===== 所有构建任务完成 ====="
+    echo "日志目录：${LOGS_DIR}"
+    echo "镜像产物：${IMAGES_DIR}"
+    echo "缓存目录：${CACHE_DIR}"
+    echo "DEB包目录：${RELEASES_DIR}"
+}
+
+# 执行主函数
+main "$@"
