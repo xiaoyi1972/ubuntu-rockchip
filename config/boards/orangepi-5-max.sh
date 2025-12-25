@@ -137,7 +137,7 @@ function config_image_hook__orangepi-5-max() {
         local deb_paths
 
         # build for mali-g610-firmware
-        chroot "${rootfs}" apt-get -y install debhelper meson pkg-config libstdc++6 libgbm-dev libdrm-dev libx11-xcb1 libxcb-dri2-0 libxdamage1 libxext6 libwayland-client0 libwayland-dev libx11-dev cmake libdrm-dev
+        chroot "${rootfs}" apt-get -y install debhelper meson pkg-config libstdc++6 libgbm-dev libdrm-dev libx11-xcb1 libxcb-dri2-0 libxdamage1 libxext6 libwayland-client0 libwayland-dev libx11-dev cmake libdrm-dev libx11-xcb-dev
         build_package_with "${rootfs}" "https://github.com/tsukumijima/libmali-rockchip.git" "tmp" deb_paths
         for deb_path in ${deb_paths}; do
             if [[ "${deb_path}" == *"libmali-valhall-g610-g24p0-x11-wayland-gbm"* ]]; then
