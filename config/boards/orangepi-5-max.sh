@@ -34,7 +34,7 @@ build_package_with() {
     local deb_paths_collects=""
     # 1. 克隆/更新仓库
     echo "Cloning repo ${repo} to ${work_dir}..."
-    chroot "${rootfs}" bash -c "rm -rf ${work_dir} && git clone ${repo} ${work_dir}" || {
+    chroot "${rootfs}" bash -c "rm -rf ${work_dir} && git clone --depth 1 ${repo} ${work_dir}" || {
         echo "Error: 克隆仓库 ${repo} 失败" >&2
         exit 1
     }
@@ -45,7 +45,7 @@ build_package_with() {
 
     # 3. 构建deb包并保存日志
     echo "Building deb package, log saved to ${build_log}..."
-    chroot "${rootfs}" bash -c "cd ${work_dir} && dpkg-buildpackage -us -uc -b" > "${rootfs}${build_log}" 2>&1 || {
+    chroot "${rootfs}" bash -c "cd ${work_dir} && dpkg-buildpackage -us -uc -b -j$(nproc)" > "${rootfs}${build_log}" 2>&1 || {
         echo "Error: dpkg-buildpackage 失败，日志如下：" >&2
         cat "${rootfs}${build_log}" >&2
         exit 1
@@ -96,6 +96,19 @@ function config_image_hook__orangepi-5-max() {
     local rootfs="$1"
     local overlay="$2"
     local suite="$3"
+    local target_kernel_version="${TARGET_KERNEL_VERSION:-}"
+    if [[ -n "${target_kernel_version}" ]]; then
+        chroot "${rootfs}" bash -c "target_kernel_version='${target_kernel_version}'; for module_dir in /lib/modules/*; do if [ -d \"\$module_dir\" ]; then module_name=\$(basename \"\$module_dir\"); if [[ \"\$module_name\" =~ ^[0-9] && \"\$module_name\" != \"\$target_kernel_version\" ]]; then rm -rf \"\$module_dir\"; fi; fi; done"
+        #chroot "${rootfs}" apt-get install -y libselinux-dev selinux-policy-dev || true
+        if chroot "${rootfs}" test -d "/usr/src/linux-headers-${target_kernel_version}"; then
+            chroot "${rootfs}" bash -c "apt -y install flex bison make"
+            chroot "${rootfs}" bash -c "cd /usr/src/linux-headers-${target_kernel_version} && make -j$(nproc) CONFIG_SECURITY_SELINUX=n modules_prepare"
+        fi
+    fi
+    local dkms_kernel_args=()
+    if [[ -n "${target_kernel_version}" ]]; then
+        dkms_kernel_args=(-k "${target_kernel_version}")
+    fi
     if [ "${suite}" == "jammy" ] || [ "${suite}" == "noble" ] || [ "${suite}" == "oracular" ] || [ "${suite}" == "plucky" ]; then
         # Kernel modules to blacklist
         echo "blacklist bcmdhd" > "${rootfs}/etc/modprobe.d/bcmdhd.conf"
@@ -118,11 +131,28 @@ function config_image_hook__orangepi-5-max() {
 
         # 确保chroot环境有网络
         cp /etc/resolv.conf "${rootfs}/etc/"
-        chroot "${rootfs}" apt-get update
+        # chroot "${rootfs}" apt-get update
         chroot "${rootfs}" apt-get install -y git dkms build-essential debhelper dh-dkms
+        
+        local deb_paths
+
+        # build for mali-g610-firmware
+        chroot "${rootfs}" apt-get -y install debhelper meson pkg-config libstdc++6 libgbm-dev libdrm-dev libx11-xcb1 libxcb-dri2-0 libxdamage1 libxext6 libwayland-client0
+        build_package_with "${rootfs}" "https://github.com/tsukumijima/libmali-rockchip.git" "tmp" deb_paths
+        for deb_path in ${deb_paths}; do
+            if [[ "${deb_path}" == *"libmali-valhall-g610-g24p0-x11-wayland-gbm"* ]]; then
+                if [[ -n "${deb_path}" ]]; then
+                    chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install 
+                else
+                    echo "Error: ${deb_path} 不存在"
+                    exit 1
+                fi
+                break
+            fi
+        done
+
 
         # build for rockchip-firmware
-        local deb_paths
         build_package_with "${rootfs}" "https://github.com/Joshua-Riek/firmware.git" "tmp" deb_paths
         for deb_path in ${deb_paths}; do
             if [[ -n "${deb_path}" ]]; then
@@ -130,7 +160,7 @@ function config_image_hook__orangepi-5-max() {
                 echo "${pkg_name} 安装完成"
             else
                 echo "Error: ${deb_path} 不存在"
-                cat "${rootfs}/tmp/build_bcmdhd-dkms.log"
+                #cat "${rootfs}/tmp/build_bcmdhd-dkms.log"
                 exit 1
             fi
             break  
@@ -156,14 +186,14 @@ function config_image_hook__orangepi-5-max() {
                     else
                        echo "未找到 make.log: ${log_path}"
                     fi
-                    cat /var/lib/dkms/bcmdhd-sdio/101.10.591.52.27-1/build/make.log
-                    local bcmdhd_ver
-                    bcmdhd_ver=$(chroot "${rootfs}" bash -c "dpkg-deb -f \"${deb_path}\" Version")
-                    local pkg_name=$(basename "${deb_path}" | cut -d'_' -f1)
-                    chroot "${rootfs}" dkms add -m "${pkg_name}" -v "${bcmdhd_ver}"
-                    chroot "${rootfs}" dkms build -m "${pkg_name}" -v "${bcmdhd_ver}"
-                    chroot "${rootfs}" dkms install -m "${pkg_name}" -v "${bcmdhd_ver}"
-                    chroot "${rootfs}" dkms enable "${pkg_name}" || true
+                    # cat /var/lib/dkms/bcmdhd-sdio/101.10.591.52.27-1/build/make.log
+                    # local bcmdhd_ver
+                    # bcmdhd_ver=$(chroot "${rootfs}" bash -c "dpkg-deb -f \"${deb_path}\" Version")
+                    # local pkg_name=$(basename "${deb_path}" | cut -d'_' -f1)
+                    # chroot "${rootfs}" dkms add -m "${pkg_name}" -v "${bcmdhd_ver}"
+                    # chroot "${rootfs}" dkms build -m "${pkg_name}" -v "${bcmdhd_ver}" "${dkms_kernel_args[@]}"
+                    # chroot "${rootfs}" dkms install -m "${pkg_name}" -v "${bcmdhd_ver}" "${dkms_kernel_args[@]}"
+                    # chroot "${rootfs}" dkms enable "${pkg_name}" || true
                     echo "${pkg_name} 安装完成"
                 else
                     echo "Error: ${deb_path} 不存在"
