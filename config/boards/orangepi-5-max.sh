@@ -9,6 +9,7 @@ export UBOOT_RULES_TARGET="orangepi-5-max-rk3588"
 export COMPATIBLE_SUITES=("plucky")
 export COMPATIBLE_FLAVORS=("server" "desktop")
 
+
 # 通用的deb包构建函数
 # 参数说明：
 # $1: rootfs路径 (必填)
@@ -20,6 +21,7 @@ build_package_with() {
     local repo="$2"
     local dir="$3"
     local result="$4"
+    local fallthrough="${5:-false}"
     
     # 校验参数完整性
     if [[ -z "${rootfs}" || -z "${repo}" || -z "${dir}" ]]; then
@@ -63,9 +65,13 @@ build_package_with() {
     for pkg in ${packages}; do
         if ! chroot "${rootfs}" bash -c "ls /${dir}/${pkg}_*.deb >/dev/null 2>&1"; then
             echo "Error: /${dir}/${pkg}_*.deb 未生成" >&2
-            exit 1
+            # 仅当 force_check 为 true 时执行 exit 1，否则仅报错不退出
+            if [[ "${fallthrough}" == "false" ]]; then
+                exit 1
+            fi
+        else
+            echo "确认生成包: /${dir}/${pkg}_*.deb"
         fi
-        echo "确认生成包: /${dir}/${pkg}_*.deb"
     done
     echo "所有Package对应的deb包已全部生成。"
 
@@ -90,6 +96,63 @@ build_package_with() {
          # 注意：这里用间接变量展开（Bash）
          eval $result="'$deb_paths_collects'"
      fi
+}
+
+download_asset_from(){
+    local REPO_OWNER="xiaoyi1972"
+    local REPO_NAME=ubuntu-rockchip
+    local RELEASE_TAG=workflow
+    # GitHub Release Asset检查基础URL
+    local GITHUB_RELEASE_DOWNLOAD_BASE="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${RELEASE_TAG}"
+    
+    check_remote_asset_exists() {
+        local asset_name="$1"
+        local download_url="${GITHUB_RELEASE_DOWNLOAD_BASE}/${asset_name}"
+        # -L：跟随重定向；-s：静默模式；-o /dev/null：丢弃响应体；-w：输出状态码；--max-time：超时10秒
+        local http_code=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 10 "${download_url}")
+        # GitHub资产存在：最终状态码为200；不存在：404；权限问题：403（也视为存在）
+        if [ "${http_code}" = "200" ] || [ "${http_code}" = "403" ]; then
+            echo "true"
+            return 0
+        else
+            echo "false"
+            return 1
+        fi
+    }
+
+    # 下载远程Asset（取消静默模式，保留下载进度输出）
+    download_remote_asset() {
+        local asset_name="$1"
+        local save_path="$2"
+        local download_url="${GITHUB_RELEASE_DOWNLOAD_BASE}/${asset_name}"
+        local save_dir=$(dirname "${save_path}")
+    
+        echo "开始下载远程文件：${asset_name}"
+        # 1. 确保保存目录存在且有写入权限
+        sudo mkdir -p "${save_dir}"
+        sudo chmod 777 "${save_dir}"
+    
+        # 2. 取消-q（静默模式），保留下载进度输出；-L：跟随重定向；-T：超时300秒；-O：输出到指定文件
+        sudo wget -L -T 300 -O "${save_path}" "${download_url}" || {
+        echo "下载失败：${download_url}"
+        sudo rm -f "${save_path}"  # 清理失败的空文件
+        return 1
+        }
+    
+        # 3. 验证文件是否下载成功（大小>0）
+        if [ ! -s "${save_path}" ]; then
+            echo "下载的文件为空：${save_path}"
+            sudo rm -f "${save_path}"
+            return 1
+        fi
+    
+        # 4. 修复下载文件的权限（方便后续使用）
+        sudo chmod 644 "${save_path}"
+        echo "下载完成：${save_path}"
+        return 0
+    }
+    local save=${2:-"$1"}
+    check_remote_asset_exists "$1" && download_remote_asset "$_" "${save}"
 }
 
 function config_image_hook__orangepi-5-max() {
@@ -137,26 +200,44 @@ function config_image_hook__orangepi-5-max() {
         local deb_paths
 
         # build for mali-g610-firmware
-        chroot "${rootfs}" apt-get -y install debhelper meson pkg-config libstdc++6 libgbm-dev libdrm-dev libx11-xcb1 libxcb1 libxcb1-dev libxcb-dri2-0 libxcb-dri2-0-dev libxdamage1 libxext6 libwayland-client0 libwayland-server0 libwayland-dev libx11-dev cmake libx11-xcb-dev
-        build_package_with "${rootfs}" "https://github.com/tsukumijima/libmali-rockchip.git" "tmp" deb_paths
-        for deb_path in ${deb_paths}; do
-            if [[ "${deb_path}" == *"libmali-valhall-g610-g24p0-x11-wayland-gbm"* ]]; then
-                if [[ -n "${deb_path}" ]]; then
-                    chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install 
-                else
-                    echo "Error: ${deb_path} 不存在"
-                    exit 1
-                fi
-                break
-            fi
-        done
+        libmali_package="deb-lib-mali.zip"
+        libmali_deb="libmali-valhall-g610-g24p0-x11-wayland-gbm_1.9-1_arm64.deb"
+        download_asset_from "${libmali_package}" && unzip -o "${libmali_package}" "${libmali_deb}" -d "${rootfs}/tmp/"
+        chroot "${rootfs}" apt install -y "/tmp/${libmali_deb}"
 
+        deal_build_with_lib_mali(){
+            local_exist(){
+                local libmali_deb="libmali-valhall-g610-g24p0-x11-wayland-gbm_1.9-1_arm64.deb"
+                cp "${libmali_deb}" "${rootfs}/tmp/"
+                chroot "${rootfs}" apt install -y "/tmp/${libmali_deb}"
+            }
+
+            build_package(){
+                mkdir -p "$rootfs/deps"
+                mount --bind "../../achieve" "$rootfs/deps"
+                chroot "${rootfs}" apt-get -y install debhelper meson pkg-config libstdc++6 libgbm-dev libdrm-dev libx11-xcb1 libxcb1 libxcb1-dev libxcb-dri2-0 libxcb-dri2-0-dev libxdamage1 libxext6 libwayland-client0 libwayland-server0 libwayland-dev libx11-dev cmake libx11-xcb-dev
+                build_package_with "${rootfs}" "https://github.com/tsukumijima/libmali-rockchip.git" "tmp" deb_paths true
+                #build_package_with "${rootfs}" "/deps/libmali-rockchip" "tmp" deb_paths true
+                umount "$rootfs/deps"
+                for deb_path in ${deb_paths}; do
+                    if [[ "${deb_path}" == *"libmali-valhall-g610-g24p0-x11-wayland-gbm"* ]]; then
+                        if [[ -n "${deb_path}" ]]; then
+                            chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install 
+                        else
+                            echo "Error: ${deb_path} 不存在"
+                            exit 1
+                        fi
+                        break
+                    fi
+                done
+            }
+        }
 
         # build for rockchip-firmware
         build_package_with "${rootfs}" "https://github.com/Joshua-Riek/firmware.git" "tmp" deb_paths
         for deb_path in ${deb_paths}; do
             if [[ -n "${deb_path}" ]]; then
-                chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install
+                chroot "${rootfs}" apt install -y "${deb_path}"
                 echo "${pkg_name} 安装完成"
             else
                 echo "Error: ${deb_path} 不存在"
@@ -174,9 +255,7 @@ function config_image_hook__orangepi-5-max() {
             if [[ "${deb_path}" == *"bcmdhd-sdio-dkms_"* ]]; then
                 # 只安装SDIO版本
                 if [[ -n "${deb_path}" ]]; then
-                    # sudo apt-get update (注：原代码此处sudo可能有问题，chroot内无需sudo)
-                    # chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install
-                    chroot "${rootfs}" dpkg -i "${deb_path}" || chroot "${rootfs}" apt-get -y -f install || true
+                    chroot "${rootfs}" apt install -y "${deb_path}"
                     # 无论是否安装失败都尝试显示 make.log
                     log_path="${rootfs}/var/lib/dkms/bcmdhd-sdio/101.10.591.52.27-1/build/make.log"
                     if [[ -f "${log_path}" ]]; then
@@ -186,14 +265,6 @@ function config_image_hook__orangepi-5-max() {
                     else
                        echo "未找到 make.log: ${log_path}"
                     fi
-                    # cat /var/lib/dkms/bcmdhd-sdio/101.10.591.52.27-1/build/make.log
-                    # local bcmdhd_ver
-                    # bcmdhd_ver=$(chroot "${rootfs}" bash -c "dpkg-deb -f \"${deb_path}\" Version")
-                    # local pkg_name=$(basename "${deb_path}" | cut -d'_' -f1)
-                    # chroot "${rootfs}" dkms add -m "${pkg_name}" -v "${bcmdhd_ver}"
-                    # chroot "${rootfs}" dkms build -m "${pkg_name}" -v "${bcmdhd_ver}" "${dkms_kernel_args[@]}"
-                    # chroot "${rootfs}" dkms install -m "${pkg_name}" -v "${bcmdhd_ver}" "${dkms_kernel_args[@]}"
-                    # chroot "${rootfs}" dkms enable "${pkg_name}" || true
                     echo "${pkg_name} 安装完成"
                 else
                     echo "Error: ${deb_path} 不存在"
