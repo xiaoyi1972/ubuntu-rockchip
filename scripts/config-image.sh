@@ -147,11 +147,33 @@ else
     chroot ${chroot_dir} /bin/bash -c "apt-get -y purge \$(dpkg --list | grep -Ei 'linux-image|linux-headers|linux-modules|linux-rockchip' | awk '{ print \$2 }')"
     chroot "${chroot_dir}" dpkg -i $deb_files || chroot "${chroot_dir}" apt-get -fy install
 
-    # hold
+    # hold the installed kernel packages so apt-get upgrade does not replace them
     for deb in "${kernel_debs[@]}"; do
         base_name=$(echo "$deb" | sed 's/_.*//')
         chroot "${chroot_dir}" apt-mark hold "${base_name}"
     done
+
+    # expose the kernel version that we just installed so hooks can target it
+    kernel_versions=()
+    for deb in "${kernel_debs[@]}"; do
+        if [[ "$deb" == linux-image-* ]]; then
+            version=${deb#linux-image-}
+            version=${version%%_*}
+            kernel_versions+=("${version}")
+        fi
+    done
+    if [[ ${#kernel_versions[@]} -gt 0 ]]; then
+        mapfile -t sorted_kernel_versions < <(printf '%s\n' "${kernel_versions[@]}" | sort -V)
+        target_kernel_version="${sorted_kernel_versions[$(( ${#sorted_kernel_versions[@]} - 1 ))]}"
+        export TARGET_KERNEL_VERSION="${target_kernel_version}"
+    fi
+fi
+
+if [[ -z "${TARGET_KERNEL_VERSION}" ]]; then
+    target_kernel_version=$(chroot "${chroot_dir}" bash -c "ls /lib/modules | grep rockchip | sort -V | tail -n1" || true)
+    if [[ -n "${target_kernel_version}" ]]; then
+        export TARGET_KERNEL_VERSION="${target_kernel_version}"
+    fi
 fi
 
 if [[ $(type -t config_image_hook__"${BOARD}") == function ]]; then
