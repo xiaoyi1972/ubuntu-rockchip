@@ -201,7 +201,7 @@ function config_image_hook__orangepi-5-max() {
 
         # build for mali-g610-firmware
         libmali_package="deb-lib-mali.zip"
-        libmali_deb="libmali-valhall-g610-g24p0-x11-wayland-gbm_1.9-1_arm64.deb"
+        libmali_deb="libmali-bifrost-g52-g13p0-x11-wayland-gbm_1.9-1_arm64.deb"
         download_asset_from "${libmali_package}" && unzip -o "${libmali_package}" "${libmali_deb}" -d "${rootfs}/tmp/"
         chroot "${rootfs}" apt install -y "/tmp/${libmali_deb}"
 
