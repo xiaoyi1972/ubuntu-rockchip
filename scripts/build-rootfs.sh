@@ -12,11 +12,11 @@ DEFINITIONS_DIR_HOST="${HOST_ROOTFS_ROOT}/definitions"       # 宿主机definiti
 DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"        # 容器内definitions目录
 
 # 检查父脚本导出的核心环境变量（仅需RELEASE_VERSION和SUITE）
-REQUIRED_ENVS=("RELEASE_VERSION" "SUITE")
+REQUIRED_ENVS=("RELEASE_VERSION" "FLAVOR")
 for env in "${REQUIRED_ENVS[@]}"; do
     if [ -z "${!env}" ]; then
         echo "ERROR: ${env}环境变量未定义！请从父脚本导出" >&2
-        echo "示例：export RELEASE_VERSION=25.04; export SUITE=server" >&2
+        echo "示例：export RELEASE_VERSION=25.04; export FLAVOR=server" >&2
         exit 1
     fi
 done
@@ -24,7 +24,7 @@ done
 # 自动拼接关键路径（核心：YAML文件名=ubuntu-rootfs-${SUITE}.yaml）
 FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
 TWEAKS_FILE="${DEFINITIONS_DIR_HOST}/tweaks.sh"                     # 宿主机tweaks路径
-YAML_CONFIG_FILENAME="ubuntu-rootfs-${SUITE}.yaml"                  # 自动拼接YAML文件名
+YAML_CONFIG_FILENAME="ubuntu-rootfs-${FLAVOR}.yaml"                  # 自动拼接YAML文件名
 YAML_CONFIG_FILE_HOST="${DEFINITIONS_DIR_HOST}/${YAML_CONFIG_FILENAME}"  # 宿主机YAML完整路径
 YAML_CONFIG_FILE_CONTAINER="${DEFINITIONS_DIR_CONTAINER}/${YAML_CONFIG_FILENAME}"  # 容器内YAML完整路径
 
