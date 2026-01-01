@@ -1,25 +1,23 @@
 #!/bin/bash
 set -eE
-trap 'echo Error: in $0 on line $LINENO' ERR
-set -x
+trap 'echo "❌ 宿主机脚本异常退出"; exit 1' EXIT INT TERM QUIT
 
 # ===================== 基础配置 =====================
 HOST_ROOTFS_ROOT=$(cd $(dirname $0)/.. && pwd -P)
 DOCKER_IMAGE="ubuntu-image-builder:plucky"
-YAML_FILE="${HOST_ROOTFS_ROOT}/definitions/ubuntu-rootfs-plucky.yaml"
+YAML_FILE="${HOST_ROOTFS_ROOT}/definitions/tweaks.sh"  # 修正为实际tweaks.sh路径
 BUILD_DIR="${HOST_ROOTFS_ROOT}/build"
 FINAL_TAR_PATH="${BUILD_DIR}/final/ubuntu-25.04-preinstalled-server.tar.xz"
 
-# ===================== 前置检查 + 宿主机层面清理chroot =====================
+# ===================== 前置检查 + 宿主机层面清理 =====================
 if [ ! -f "${YAML_FILE}" ]; then
-    echo "ERROR: YAML配置文件不存在 → ${YAML_FILE}" >&2
+    echo "ERROR: YAML/tweaks.sh文件不存在 → ${YAML_FILE}" >&2
     exit 1
 fi
-# 仅删除，不创建chroot
-rm -rf "${BUILD_DIR}/chroot"
+rm -rf "${BUILD_DIR}"/*
 mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/img" "${BUILD_DIR}/final"
 
-# ===================== 第一步：Docker Build（删除注释 + 多线程编译） =====================
+# ===================== 第一步：Docker Build（多线程编译 + 无多余注释） =====================
 echo -e "\n=== 第一步：Docker Build 构建镜像 ==="
 DOCKERFILE_DIR=$(mktemp -d)
 
@@ -27,7 +25,7 @@ cat > "${DOCKERFILE_DIR}/Dockerfile" << 'DOCKERFILE_EOF'
 FROM ubuntu:25.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ========== 保留换源逻辑 ==========
+# ========== 换源逻辑（保留注释） ==========
 RUN <<SCRIPT
 set -e
 # mkdir -p /etc/apt/backup
@@ -45,7 +43,7 @@ set -e
 apt-get update -y -qq
 SCRIPT
 
-# ========== 安装依赖 + 多线程编译ubuntu-image（删除所有行内注释） ==========
+# ========== 安装依赖 + 多线程编译ubuntu-image ==========
 RUN <<SCRIPT
 set -e
 apt-get install -y --no-install-recommends \
@@ -85,13 +83,12 @@ apt-mark hold ubuntu-image
 cd /
 rm -rf "${tmp_dir}"
 command -v ubuntu-image || exit 1
-
 SCRIPT
 
 WORKDIR /rootfs-build
 DOCKERFILE_EOF
 
-# 执行Docker Build
+# 构建镜像
 docker build \
     --no-cache \
     --pull \
@@ -100,31 +97,51 @@ docker build \
     "${DOCKERFILE_DIR}"
 rm -rf "${DOCKERFILE_DIR}"
 
-# ===================== 第二步：Docker Run（替换为指定的inotify逻辑） =====================
-echo -e "\n=== 第二步：Docker Run 构建Rootfs ==="
+# ===================== 第二步：Docker Run（tmpfs + trap清理 + inotify监控） =====================
+echo -e "\n=== 第二步：Docker Run 构建Rootfs（tmpfs加速 + 自动清理） ==="
 CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 
 cat > "${CONTAINER_SCRIPT}" << 'SCRIPT_EOF'
-set -e
-# 仅清理，不创建chroot
-rm -rf /rootfs-build/build/chroot/* || true
-rm -rf /rootfs-build/build/chroot || true
+#!/bin/bash
+set -eE
 
-# ===================== 核心修复：权限+用户组（移到外层） =====================
+# ===================== 核心：定义cleanup函数（清理tmpfs） =====================
+cleanup() {
+    echo -e "\n🔍 触发清理逻辑，卸载tmpfs..."
+    # 安全卸载tmpfs（忽略卸载失败）
+    if mount | grep -q "/rootfs-build/build type tmpfs"; then
+        umount /rootfs-build/build || echo "⚠️ tmpfs卸载失败（可能已卸载）"
+        echo "✅ tmpfs已成功卸载"
+    fi
+    # 清理残留进程
+    pkill inotifywait || true
+    echo "✅ 清理完成"
+}
+
+# ===================== 绑定信号：EXIT/INT/TERM/QUIT均触发cleanup =====================
+trap 'cleanup' EXIT INT TERM QUIT
+
+# ===================== 1. 初始化 + 挂载tmpfs =====================
+# 清理旧目录
+rm -rf /rootfs-build/build/*
+mkdir -p /rootfs-build/build /rootfs-build/build/img /rootfs-build/build/final
+
+# 挂载tmpfs（内存文件系统，加速IO）
+echo "✅ 挂载tmpfs到/rootfs-build/build（size=4G）"
+mount -t tmpfs -o size=4G,mode=755,uid=0,gid=0 tmpfs /rootfs-build/build
+
+# ===================== 2. 修复tweaks.sh权限 + 属主 =====================
 TWEAKS_FILE="/rootfs-build/definitions/tweaks.sh"
 if [ -f "${TWEAKS_FILE}" ]; then
-    # 1. 修复执行权限
     chmod +x "${TWEAKS_FILE}"
-    # 2. 修复属主/属组（关键：确保chroot内root能访问）
     chown root:root "${TWEAKS_FILE}"
     echo "✅ 已修复tweaks.sh：执行权限(+x) + 属主(root:root)"
-    # 验证权限和属主
     ls -l "${TWEAKS_FILE}"
 else
     echo "⚠️ 未找到tweaks.sh文件：${TWEAKS_FILE}"
 fi
 
-# 关键修复1：配置binfmt（适配Ubuntu 25.04）
+# ===================== 3. 配置binfmt（适配Ubuntu 25.04） =====================
 mkdir -p /proc/sys/fs/binfmt_misc
 mount -t binfmt_misc none /proc/sys/fs/binfmt_misc || true
 update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-aarch64-static \
@@ -134,20 +151,15 @@ update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-a
 update-binfmts --enable qemu-aarch64 || true
 /usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static不存在"; exit 1; }
 
-# 关键修复2：替换为指定的inotify监控逻辑
-# 等待chroot目录创建（内核事件触发，无轮询）
+# ===================== 4. inotify内核级监控chroot创建 =====================
 (
     inotifywait -m -r -e CREATE,ISDIR --format '%w%f' /rootfs-build/build | while read dir; do
-        # 检测是否是chroot目录创建
         if [[ "$dir" == "/rootfs-build/build/chroot" ]]; then
             echo "✅ 内核检测到chroot目录创建，等待子目录初始化..."
-            # 等待chroot/usr/bin创建（debootstrap会初始化目录结构）
             until [ -d "/rootfs-build/build/chroot/usr/bin" ]; do sleep 0.1; done
-            # 复制qemu到chroot（解决/bin/true执行失败）
             cp /usr/bin/qemu-aarch64-static /rootfs-build/build/chroot/usr/bin/
             chmod +x /rootfs-build/build/chroot/usr/bin/qemu-aarch64-static
             echo "✅ qemu已复制到chroot，停止监控"
-            # 停止inotify监控（避免僵尸进程）
             pkill inotifywait
             exit 0
         fi
@@ -155,37 +167,35 @@ update-binfmts --enable qemu-aarch64 || true
 ) &
 MONITOR_PID=$!
 
-# 执行ubuntu-image（YAML内的逻辑由其自行处理）
+# ===================== 5. 执行ubuntu-image =====================
+echo "🚀 执行ubuntu-image构建..."
 if ! ubuntu-image --debug \
     --workdir /rootfs-build/build \
     --output-dir /rootfs-build/build/img \
-    classic /rootfs-build/definitions/ubuntu-rootfs-plucky.yaml; then
-  echo -e "\n❌ ubuntu-image失败，打印日志（若存在）："
+    classic /rootfs-build/definitions/ubuntu-rootfs-plucky.yaml; then  # 修正为实际YAML路径
+  echo -e "\n❌ ubuntu-image执行失败，打印日志："
   [ -f "/rootfs-build/build/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap日志不存在"
   [ -f "/rootfs-build/build/img/build.log" ] && cat $_ || echo "ubuntu-image日志不存在"
-  # 检查进程存在再kill（解决No such process警告）
-  if ps -p $MONITOR_PID > /dev/null; then
-      kill $MONITOR_PID || true
-  fi
-  pkill inotifywait || true
   exit 1
 fi
 
-# 检查进程存在再等待（避免警告）
+# ===================== 6. 等待监控进程 + 打包 =====================
 if ps -p $MONITOR_PID > /dev/null; then
     wait $MONITOR_PID || true
 fi
 
-# 打包rootfs
+echo "📦 打包rootfs到tar.xz..."
 tar -cJf /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz \
     -p -C /rootfs-build/build/chroot . \
     --sort=name \
     --xattrs
 
+# 验证打包结果
 ls -lh /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz
+echo "🎉 构建成功！tmpfs清理将由trap自动触发"
 SCRIPT_EOF
 
-# 执行Docker Run
+# 执行容器（--privileged确保挂载权限）
 docker run --rm -i \
     --privileged \
     --cap-add=ALL \
@@ -195,15 +205,21 @@ docker run --rm -i \
     "${DOCKER_IMAGE}" \
     /bin/bash /tmp/run-script.sh
 
+# 清理容器脚本
 rm -f "${CONTAINER_SCRIPT}"
 
-# ===================== 最终验证 =====================
+# ===================== 宿主机验证 =====================
 set +x
 if [ -f "${FINAL_TAR_PATH}" ]; then
-    echo -e "\n🎉 构建成功！"
-    echo "产物路径：${FINAL_TAR_PATH}"
-    echo "产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
+    echo -e "\n========================================"
+    echo "🎉 整体构建成功！"
+    echo "📁 产物路径：${FINAL_TAR_PATH}"
+    echo "📏 产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
+    echo "========================================"
 else
-    echo -e "\n❌ 构建失败：未生成产物文件" >&2
+    echo -e "\n❌ 构建失败：未生成最终产物" >&2
     exit 1
 fi
+
+# 解除宿主机trap
+trap - EXIT INT TERM QUIT
