@@ -2,32 +2,52 @@
 set -eE
 trap 'echo "❌ 宿主机脚本异常退出"; exit 1' EXIT INT TERM QUIT
 
-# ===================== 基础配置（仅保留核心参数） =====================
+# ===================== 基础配置（YAML文件名由SUITE自动拼接） =====================
 HOST_ROOTFS_ROOT=$(cd $(dirname $0)/.. && pwd -P)
 DOCKER_IMAGE="ubuntu-image-builder:plucky"
-YAML_FILE="${HOST_ROOTFS_ROOT}/definitions/tweaks.sh"
 BUILD_DIR="${HOST_ROOTFS_ROOT}/build"  # 磁盘构建/产物目录
 
-# 检查SUITE是否由父脚本导出
-if [ -z "${SUITE}" ]; then
-    echo "ERROR: SUITE环境变量未定义！请从父脚本导出（如export SUITE=server）" >&2
+# 固定目录（definitions目录路径统一）
+DEFINITIONS_DIR_HOST="${HOST_ROOTFS_ROOT}/definitions"       # 宿主机definitions目录
+DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"        # 容器内definitions目录
+
+# 检查父脚本导出的核心环境变量（仅需RELEASE_VERSION和SUITE）
+REQUIRED_ENVS=("RELEASE_VERSION" "SUITE")
+for env in "${REQUIRED_ENVS[@]}"; do
+    if [ -z "${!env}" ]; then
+        echo "ERROR: ${env}环境变量未定义！请从父脚本导出" >&2
+        echo "示例：export RELEASE_VERSION=25.04; export SUITE=server" >&2
+        exit 1
+    fi
+done
+
+# 自动拼接关键路径（核心：YAML文件名=ubuntu-rootfs-${SUITE}.yaml）
+FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
+TWEAKS_FILE="${DEFINITIONS_DIR_HOST}/tweaks.sh"                     # 宿主机tweaks路径
+YAML_CONFIG_FILENAME="ubuntu-rootfs-${SUITE}.yaml"                  # 自动拼接YAML文件名
+YAML_CONFIG_FILE_HOST="${DEFINITIONS_DIR_HOST}/${YAML_CONFIG_FILENAME}"  # 宿主机YAML完整路径
+YAML_CONFIG_FILE_CONTAINER="${DEFINITIONS_DIR_CONTAINER}/${YAML_CONFIG_FILENAME}"  # 容器内YAML完整路径
+
+# ===================== 前置检查（确保文件存在） =====================
+# 检查tweaks.sh
+if [ ! -f "${TWEAKS_FILE}" ]; then
+    echo "ERROR: tweaks.sh文件不存在 → ${TWEAKS_FILE}" >&2
     exit 1
 fi
 
-# 产物路径（磁盘目录，无tmpfs影响）
-FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-25.04-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
-
-# ===================== 前置检查 + 清理旧产物 =====================
-if [ ! -f "${YAML_FILE}" ]; then
-    echo "ERROR: tweaks.sh文件不存在 → ${YAML_FILE}" >&2
+# 检查自动拼接后的YAML配置文件
+if [ ! -f "${YAML_CONFIG_FILE_HOST}" ]; then
+    echo "ERROR: YAML配置文件不存在 → ${YAML_CONFIG_FILE_HOST}" >&2
+    echo "请确认SUITE=${SUITE}对应的YAML文件（${YAML_CONFIG_FILENAME}）存在于definitions目录" >&2
     exit 1
 fi
-# 清理旧产物，保留目录结构
+
+# 清理旧产物和临时构建文件
 rm -rf "${BUILD_DIR}/"*.tar.xz
 rm -rf "${BUILD_DIR}/chroot" "${BUILD_DIR}/img"
 mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/img"
 
-# ===================== 第一步：Docker Build（无多余注释） =====================
+# ===================== 第一步：Docker Build（移除bc依赖） =====================
 echo -e "\n=== 第一步：Docker Build 构建镜像 ==="
 DOCKERFILE_DIR=$(mktemp -d)
 
@@ -37,13 +57,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN <<SCRIPT
 set -e
-# 换源逻辑（保留必要注释）
+# 可选换源：
 # sed -i.bak 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
-# sed -i 's@http://security.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
 apt-get update -y -qq
 SCRIPT
 
-# 安装依赖（包含bc，无tmpfs相关）
+# 安装通用依赖（移除bc）
 RUN <<SCRIPT
 set -e
 apt-get install -y --no-install-recommends \
@@ -67,8 +86,7 @@ apt-get install -y --no-install-recommends \
     rsync \
     xz-utils \
     curl \
-    inotify-tools \
-    bc
+    inotify-tools
 
 tmp_dir=$(mktemp -d)
 cd "${tmp_dir}" || exit 1
@@ -98,7 +116,7 @@ docker build \
     "${DOCKERFILE_DIR}"
 rm -rf "${DOCKERFILE_DIR}"
 
-# ===================== 第二步：Docker Run（纯磁盘构建，无tmpfs） =====================
+# ===================== 第二步：Docker Run（容器内自动拼接YAML路径） =====================
 echo -e "\n=== 第二步：Docker Run 构建Rootfs（纯磁盘目录） ==="
 CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 
@@ -106,37 +124,48 @@ cat > "${CONTAINER_SCRIPT}" << 'SCRIPT_EOF'
 #!/bin/bash
 set -eE
 
-# 配置参数（无tmpfs相关）
-BUILD_DIR="/rootfs-build/build"  # 磁盘构建/产物目录
+# 配置参数（容器内固定目录）
+BUILD_DIR="/rootfs-build/build"
+DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"
 
-# 检查SUITE环境变量
-if [ -z "${SUITE}" ]; then
-    echo "ERROR: 容器内SUITE环境变量未传递！" >&2
-    exit 1
-fi
-# 产物路径（磁盘目录）
-FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-25.04-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
+# 检查父脚本传递的环境变量（仅RELEASE_VERSION和SUITE）
+REQUIRED_ENVS=("RELEASE_VERSION" "SUITE")
+for env in "${REQUIRED_ENVS[@]}"; do
+    if [ -z "${!env}" ]; then
+        echo "ERROR: 容器内${env}环境变量未传递！" >&2
+        exit 1
+    fi
+done
 
-# ===================== 简化清理函数（仅清理进程） =====================
+# 容器内自动拼接路径（核心：YAML文件名=ubuntu-rootfs-${SUITE}.yaml）
+FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
+TWEAKS_FILE="${DEFINITIONS_DIR_CONTAINER}/tweaks.sh"
+YAML_CONFIG_FILENAME="ubuntu-rootfs-${SUITE}.yaml"                  # 自动拼接YAML文件名
+YAML_CONFIG_FILE="${DEFINITIONS_DIR_CONTAINER}/${YAML_CONFIG_FILENAME}"  # 容器内YAML完整路径
+
+# ===================== 清理函数 =====================
 cleanup() {
     echo -e "\n🔍 触发清理逻辑..."
-    # 仅清理inotifywait残留进程
     pkill inotifywait || true
     echo "✅ 清理完成（产物保留在${BUILD_DIR}）"
 }
-
-# 绑定信号
 trap 'cleanup' EXIT INT TERM QUIT
 
 # ===================== 修复tweaks.sh权限 =====================
-TWEAKS_FILE="/rootfs-build/definitions/tweaks.sh"
 if [ -f "$TWEAKS_FILE" ]; then
     chmod +x "$TWEAKS_FILE"
     chown root:root "$TWEAKS_FILE"
-    echo "✅ 已修复tweaks.sh权限"
-    ls -l "$TWEAKS_FILE"
+    echo "✅ 已修复tweaks.sh权限 → ${TWEAKS_FILE}"
 else
-    echo "⚠️ 未找到tweaks.sh文件：$TWEAKS_FILE"
+    echo "ERROR: 容器内tweaks.sh不存在 → ${TWEAKS_FILE}" >&2
+    exit 1
+fi
+
+# ===================== 检查容器内YAML文件 =====================
+if [ ! -f "${YAML_CONFIG_FILE}" ]; then
+    echo "ERROR: 容器内YAML配置文件不存在 → ${YAML_CONFIG_FILE}" >&2
+    echo "请确认宿主机definitions目录包含${YAML_CONFIG_FILENAME}" >&2
+    exit 1
 fi
 
 # ===================== 配置binfmt =====================
@@ -149,15 +178,15 @@ update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-a
 update-binfmts --enable qemu-aarch64 || true
 /usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static不存在"; exit 1; }
 
-# ===================== inotify监控chroot创建（磁盘目录） =====================
+# ===================== inotify监控chroot创建 =====================
 (
     inotifywait -m -r -e CREATE,ISDIR --format '%w%f' "${BUILD_DIR}" | while read dir; do
         if [[ "$dir" == "${BUILD_DIR}/chroot" ]]; then
-            echo "✅ 检测到chroot创建（磁盘目录），等待子目录初始化..."
+            echo "✅ 检测到chroot创建，等待子目录初始化..."
             until [ -d "${BUILD_DIR}/chroot/usr/bin" ]; do sleep 0.1; done
             cp /usr/bin/qemu-aarch64-static "${BUILD_DIR}/chroot/usr/bin/"
             chmod +x "${BUILD_DIR}/chroot/usr/bin/qemu-aarch64-static"
-            echo "✅ qemu已复制到chroot（磁盘目录）"
+            echo "✅ qemu已复制到chroot"
             pkill inotifywait
             exit 0
         fi
@@ -165,39 +194,40 @@ update-binfmts --enable qemu-aarch64 || true
 ) &
 MONITOR_PID=$!
 
-# ===================== 执行ubuntu-image（磁盘目录构建） =====================
-echo "🚀 执行ubuntu-image构建（磁盘目录：${BUILD_DIR}）..."
+# ===================== 执行ubuntu-image（自动拼接的YAML路径） =====================
+echo "🚀 执行ubuntu-image构建（YAML配置：${YAML_CONFIG_FILE}）..."
 if ! ubuntu-image --debug \
     --workdir "${BUILD_DIR}" \
     --output-dir "${BUILD_DIR}/img" \
-    classic /rootfs-build/definitions/ubuntu-rootfs-plucky.yaml; then
+    classic "${YAML_CONFIG_FILE}"; then
   echo -e "\n❌ ubuntu-image执行失败"
   [ -f "${BUILD_DIR}/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap日志不存在"
   [ -f "${BUILD_DIR}/img/build.log" ] && cat $_ || echo "ubuntu-image日志不存在"
   exit 1
 fi
 
-# ===================== 等待监控进程 + 打包（产物输出到磁盘） =====================
+# ===================== 打包产物 =====================
 if ps -p $MONITOR_PID > /dev/null; then
     wait $MONITOR_PID || true
 fi
 
-echo "📦 打包rootfs到磁盘产物目录..."
+echo "📦 打包rootfs（版本：${RELEASE_VERSION}，套件：${SUITE}）..."
 tar -cJf ${FINAL_TAR_PATH} \
     -p -C "${BUILD_DIR}/chroot" . \
     --sort=name \
     --xattrs
 
-# ===================== 验证产物（磁盘目录） =====================
-echo -e "\n🔍 验证产物（磁盘目录）："
+# ===================== 验证产物 =====================
+echo -e "\n🔍 产物验证："
 ls -lh ${FINAL_TAR_PATH}
-echo "🎉 构建成功！产物已保存到磁盘：${FINAL_TAR_PATH}"
+echo "🎉 构建成功！产物路径：${FINAL_TAR_PATH}"
 SCRIPT_EOF
 
-# 执行容器：传递SUITE，绑定磁盘构建/产物目录
+# 执行容器：仅传递RELEASE_VERSION和SUITE（删除指定注释）
 docker run --rm -i \
     --privileged \
     --cap-add=ALL \
+    -e RELEASE_VERSION="${RELEASE_VERSION}" \
     -e SUITE="${SUITE}" \
     -v "${HOST_ROOTFS_ROOT}:/rootfs-build" \
     -v "${BUILD_DIR}:/rootfs-build/build" \
@@ -208,21 +238,20 @@ docker run --rm -i \
 # 清理容器脚本
 rm -f "${CONTAINER_SCRIPT}"
 
-# ===================== 宿主机验证（产物在磁盘） =====================
+# ===================== 宿主机验证 =====================
 set +x
 if [ -f "${FINAL_TAR_PATH}" ]; then
     echo -e "\n========================================"
     echo "🎉 整体构建成功！"
-    echo "📁 产物路径（磁盘）：${FINAL_TAR_PATH}"
+    echo "📁 产物路径：${FINAL_TAR_PATH}"
     echo "📏 产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
-    echo "✅ SUITE：${SUITE}"
-    echo "✅ 产物永久保存在磁盘，无tmpfs丢失风险"
+    echo "✅ 版本：${RELEASE_VERSION} | 套件：${SUITE} | YAML：${YAML_CONFIG_FILENAME}"
     echo "========================================"
 else
-    echo -e "\n❌ 构建失败：未生成最终产物" >&2
+    echo -e "\n❌ 构建失败：未生成产物" >&2
     ls -la "${BUILD_DIR}/"
     exit 1
 fi
 
-# 解除宿主机trap
+# 解除trap
 trap - EXIT INT TERM QUIT
