@@ -243,7 +243,7 @@ docker run --rm -i \
     --cap-add=ALL \
     -e SUITE="${SUITE}" \
     -v "${HOST_ROOTFS_ROOT}:/rootfs-build" \
-    -v "${BUILD_DIR}:/rootfs-build/build"  # 产物目录绑定到宿主机磁盘
+    -v "${BUILD_DIR}:/rootfs-build/build" \
     -v "${CONTAINER_SCRIPT}:/tmp/run-script.sh:ro" \
     "${DOCKER_IMAGE}" \
     /bin/bash /tmp/run-script.sh
