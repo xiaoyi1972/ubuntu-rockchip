@@ -220,6 +220,6 @@ fi
 ./scripts/build-rootfs.sh
 
 # Create the disk image
-./scripts/config-image.sh
+bash -x ./scripts/config-image.sh
 
 exit 0

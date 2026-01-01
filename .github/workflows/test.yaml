@@ -1,0 +1,212 @@
+name: Test
+run-name: Test ${{ inputs.rootfs_target || 'rootfs' }}
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      rootfs_target:
+        description: '指定 rootfs 标识（默认值：rootfs）'
+        required: false
+        default: 'rootfs'
+        type: string
+
+env:
+  REPO_OWNER: xiaoyi1972
+  REPO_NAME: ubuntu-rockchip
+  RELEASE_TAG: workflow
+  ROOTFS_FILE_PREFIX: ubuntu
+  ROOTFS_ARCH: arm64
+
+jobs:
+  config:
+    runs-on: ubuntu-22.04
+    name: Create matrix
+    outputs:
+      build_matrix: ${{ steps.build.outputs.build_matrix }}
+      rootfs_matrix: ${{ steps.rootfs.outputs.rootfs_matrix }}
+      # 核心：将 rootfs_target 作为输出变量（解析阶段可访问）
+      rootfs_target: ${{ steps.set_rootfs_target.outputs.rootfs_target }}
+    steps:
+      - name: Set rootfs target variable
+        id: set_rootfs_target
+        run: |
+          # 优先使用手动输入值，默认 kernel
+          ROOTFS_TARGET="${{ inputs.rootfs_target || 'kernel' }}"
+          echo "rootfs_target=$ROOTFS_TARGET" >> $GITHUB_OUTPUT
+
+      - name: 🧹 前置清理磁盘空间
+        run: |
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          sudo rm -rf /tmp/* /var/tmp/* || true
+          df -h
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create build matrix
+        id: build
+        run: |
+          build_matrix=""
+          for file in config/boards/*; do
+            COMPATIBLE_SUITES=()
+            COMPATIBLE_FLAVORS=()
+            source "${file}" || { echo "Error loading ${file}"; exit 1; }
+            for suite in "${COMPATIBLE_SUITES[@]}"; do
+              for flavor in "${COMPATIBLE_FLAVORS[@]}"; do
+                build_matrix+="{\"board\":\"$(basename "${file%.sh}")\",\"suite\":\"${suite}\",\"flavor\":\"${flavor}\"},"
+              done
+            done
+          done
+          if [ -z "$build_matrix" ]; then
+            echo "build_matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+          else
+            echo "build_matrix={\"include\":[${build_matrix::-1}]}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create rootfs matrix
+        id: rootfs
+        run: |
+          rootfs_matrix=""
+          for suite in config/suites/*; do
+            for flavor in config/flavors/*; do
+              rootfs_matrix+="{\"suite\":\"$(basename "${suite%.sh}")\",\"flavor\":\"$(basename "${flavor%.sh}")\"},"
+            done
+          done
+          if [ -z "$rootfs_matrix" ]; then
+            echo "rootfs_matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+          else
+            echo "rootfs_matrix={\"include\":[${rootfs_matrix::-1}]}" >> $GITHUB_OUTPUT
+          fi
+
+  rootfs:
+    runs-on: ubuntu-22.04
+    # 修正：引用 config Job 的输出变量（解析阶段可访问）
+    name: Build ${{ needs.config.outputs.rootfs_target }} (${{ matrix.suite }}-${{ matrix.flavor }})
+    needs: [config]
+    strategy:
+      matrix: ${{ fromJson(needs.config.outputs.build_matrix) }}
+      fail-fast: false
+    timeout-minutes: 180
+    steps:
+      - name: 🧹 彻底清理磁盘空间（解决No space left）
+        if: false
+        run: |
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          sudo rm -rf /home/runner/_diag/* || true
+          sudo docker system prune -a -f || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y --purge
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          sudo rm -rf ${{ github.workspace }}/build/* ${{ github.workspace }}/images/* || true
+          sudo rm -rf /tmp/* /var/tmp/* || true
+          echo "===== 磁盘空间清理后状态 ====="
+          df -h
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Debug - Env & Directory
+        run: |
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo "Matrix: suite=${{ matrix.suite }}, flavor=${{ matrix.flavor }}"
+          # 修正：通过环境变量传递（执行阶段可访问）
+          echo "ROOTFS_TARGET: ${{ needs.config.outputs.rootfs_target }}"
+          pwd
+          ls -la
+          ls -la config/suites/
+          df -h
+
+      - name: Set environment variables
+        id: vars
+        run: |
+          source config/suites/${{ matrix.suite }}.sh || { echo "Error loading suite config"; exit 1; }
+          echo "suite_version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+          # 修正：使用 config Job 的输出变量
+          ROOTFS_TARGET="${{ needs.config.outputs.rootfs_target }}"
+          ROOTFS_ZIP_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${ROOTFS_TARGET}.zip"
+          ROOTFS_TAR_NAME="${{ env.ROOTFS_FILE_PREFIX }}-${RELEASE_VERSION}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}.${ROOTFS_TARGET}.tar.xz"
+          ROOTFS_DOWNLOAD_URL="https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}/releases/download/${{ env.RELEASE_TAG }}/${ROOTFS_ZIP_NAME}"
+          echo "rootfs_zip_name=$ROOTFS_ZIP_NAME" >> $GITHUB_OUTPUT
+          echo "rootfs_tar_name=$ROOTFS_TAR_NAME" >> $GITHUB_OUTPUT
+          echo "rootfs_download_url=$ROOTFS_DOWNLOAD_URL" >> $GITHUB_OUTPUT
+
+      - name: Install GitHub CLI (if missing)
+        run: |
+          if ! command -v gh &> /dev/null; then
+            sudo apt update && sudo apt install -y gh
+          fi
+          gh --version
+
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      - name: Install full build dependencies (only if remote rootfs not found)
+        shell: bash
+        if: false
+        run: |
+          sudo apt-get update && sudo apt-get upgrade -y
+          sudo apt-get install -y \
+            build-essential gcc-aarch64-linux-gnu bison \
+            qemu-user-static qemu-system-arm qemu-efi u-boot-tools binfmt-support \
+            debootstrap flex libssl-dev bc rsync kmod cpio xz-utils fakeroot parted \
+            udev dosfstools uuid-runtime git-lfs device-tree-compiler python2 python3 \
+            python-is-python3 fdisk bc debhelper python3-pyelftools python3-setuptools \
+            python3-distutils python3-pkg-resources swig libfdt-dev libpython3-dev dctrl-tools \
+            opencl-c-headers ocl-icd-opencl-dev dmraid libgpgme11-dev \
+            live-build ubuntu-keyring \
+            gcc-aarch64-linux-gnu
+          sudo update-binfmts --enable qemu-aarch64
+          ls /usr/bin/qemu-aarch64-static
+          update-binfmts --display qemu-aarch64
+
+      - name: Build ${{ needs.config.outputs.rootfs_target }} (only if remote file not found)
+        shell: bash
+        run: |
+          cd ${{ github.workspace }}
+          # 修正：使用 config Job 的输出变量
+          ROOTFS_TARGET="${{ needs.config.outputs.rootfs_target }}"
+          sudo bash ./build.sh --board=${{ matrix.board }} --suite=${{ matrix.suite }} --flavor=${{ matrix.flavor }} --${ROOTFS_TARGET}-only 2>&1 | tee build-${ROOTFS_TARGET}.log
+
+      - name: Save build log (debug)
+        if: always()
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          # 修正：引用 config Job 的输出变量
+          name: ${{ needs.config.outputs.rootfs_target }}-build-log-${{ matrix.suite }}-${{ matrix.flavor }}
+          path: ${{ github.workspace }}/build-${{ needs.config.outputs.rootfs_target }}.log
+          if-no-files-found: warn
+
+      - name: Debug - Check ${{ needs.config.outputs.rootfs_target }} file
+        run: |
+          # 修正：使用 config Job 的输出变量
+          ROOTFS_TARGET="${{ needs.config.outputs.rootfs_target }}"
+          TARGET_FILE="${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}"
+          if [ -f "$TARGET_FILE" ]; then
+            echo "✅ $ROOTFS_TARGET file exists: $TARGET_FILE"
+            du -h "$TARGET_FILE"
+          else
+            echo "❌ $ROOTFS_TARGET file not found: $TARGET_FILE"
+            ls -la ${{ github.workspace }}/build/
+            exit 1
+          fi
+
+      - name: Upload ${{ needs.config.outputs.rootfs_target }} artifact
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          # 修正：引用 config Job 的输出变量
+          name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ needs.config.outputs.rootfs_target }}
+          path: ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
+          if-no-files-found: error
+          compression-level: 6
+          overwrite: false
+
+      - name: 🧹 清理${{ needs.config.outputs.rootfs_target }}临时构建文件（释放空间）
+        run: |
+          # 修正：使用 config Job 的输出变量
+          ROOTFS_TARGET="${{ needs.config.outputs.rootfs_target }}"
+          sudo rm -rf ${{ github.workspace }}/build/chroot || true
+          sudo rm -rf ${{ github.workspace }}/build/rootfs || true
+          sync && echo 3 | sudo tee /proc/sys/vm/drop_caches || true
+          df -h

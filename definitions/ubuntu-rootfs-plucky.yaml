@@ -1,0 +1,58 @@
+name: ubuntu-rootfs
+display-name: Ubuntu rootfs ARM64
+revision: 1
+architecture: arm64
+series: plucky
+class: preinstalled
+rootfs:
+  archive: ubuntu
+  # sources-list-deb822: true
+  components:
+    - main
+    - restricted
+    - universe
+    - multiverse
+  mirror: "http://ports.ubuntu.com/ubuntu-ports"
+  # mirror: "http://mirrors.aliyun.com/ubuntu-ports/"
+  pocket: updates
+  seed:
+    urls:
+      - "https://git.launchpad.net/~ubuntu-core-dev/ubuntu-seeds/+git/"
+    branch: plucky
+    names:
+      - minimal
+customization:
+  manual:
+    copy-file:
+      - source: tweaks.sh
+        destination: /tweaks.sh 
+    execute:
+      - path: /tweaks.sh
+  extra-packages:
+    - name: "u-boot-tools"
+    - name: "u-boot-menu"
+    - name: "ubuntu-desktop-minimal"
+    - name: "cloud-initramfs-growroot"
+    - name: "oem-config-gtk"
+    - name: "ubiquity-frontend-gtk"
+    - name: "yaru-theme-unity"
+    - name: "aptdaemon"
+    - name: "initramfs-tools"
+    - name: "localechooser-data"
+    - name: "oem-config"
+    - name: "oem-config-debconf"
+    - name: "ubiquity-slideshow-ubuntu"
+  extra-snaps:
+    - name: snapd
+    - name: bare
+    - name: core22
+    - name: core24
+    - name: firefox
+    - name: gnome-42-2204
+    - name: gtk-common-themes
+    - name: thunderbird
+artifacts:
+  tar:
+    name: ubuntu-25.04-preinstalled-desktop-arm64.tar.xz
+    compression: xz
+    #tar-args: ["-p", "-c", "--sort=name", "--xattrs"]

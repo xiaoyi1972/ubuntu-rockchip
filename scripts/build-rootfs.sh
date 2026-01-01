@@ -1,146 +1,190 @@
 #!/bin/bash
-
-set -eE 
+set -eE
 trap 'echo Error: in $0 on line $LINENO' ERR
+set -x
 
-if [ "$(id -u)" -ne 0 ]; then 
-    echo "Please run as root"
+# ===================== 基础配置 =====================
+HOST_ROOTFS_ROOT=$(cd $(dirname $0)/.. && pwd -P)
+DOCKER_IMAGE="ubuntu-image-builder:plucky"
+YAML_FILE="${HOST_ROOTFS_ROOT}/definitions/ubuntu-rootfs-plucky.yaml"
+BUILD_DIR="${HOST_ROOTFS_ROOT}/build"
+FINAL_TAR_PATH="${BUILD_DIR}/final/ubuntu-25.04-preinstalled-server.tar.xz"
+
+# ===================== 前置检查 + 宿主机层面清理chroot =====================
+if [ ! -f "${YAML_FILE}" ]; then
+    echo "ERROR: YAML配置文件不存在 → ${YAML_FILE}" >&2
     exit 1
 fi
+# 仅删除，不创建chroot
+rm -rf "${BUILD_DIR}/chroot"
+mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/img" "${BUILD_DIR}/final"
 
-cd "$(dirname -- "$(readlink -f -- "$0")")" && cd ..
-mkdir -p build && cd build
+# ===================== 第一步：Docker Build（安装inotify-tools） =====================
+echo -e "\n=== 第一步：Docker Build 构建镜像 ==="
+DOCKERFILE_DIR=$(mktemp -d)
 
-if [[ -z ${SUITE} ]]; then
-    echo "Error: SUITE is not set"
-    exit 1
-fi
+cat > "${DOCKERFILE_DIR}/Dockerfile" << 'DOCKERFILE_EOF'
+FROM ubuntu:25.04
+ENV DEBIAN_FRONTEND=noninteractive
 
-# shellcheck source=/dev/null
-source "../config/suites/${SUITE}.sh"
+# ========== 保留换源逻辑 ==========
+RUN <<SCRIPT
+set -e
+# mkdir -p /etc/apt/backup
+# cp /etc/apt/sources.list /etc/apt/backup/sources.list.bak 2>/dev/null || true
+# cp /etc/apt/sources.list.d/* /etc/apt/backup/ 2>/dev/null || true
 
-if [[ -z ${FLAVOR} ]]; then
-    echo "Error: FLAVOR is not set"
-    exit 1
-fi
+# sed -i.bak 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
+# sed -i 's@http://security.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
+# if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+#    sed -i.bak 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
+#    sed -i 's@http://security.ubuntu.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
+# fi
 
-# shellcheck source=/dev/null
-source "../config/flavors/${FLAVOR}.sh"
+# grep -E "mirrors.aliyun.com" /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+apt-get update -y -qq
+SCRIPT
 
-if [[ -f ubuntu-${RELASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz ]]; then
-    exit 0
-fi
-
-pushd .
+# ========== 安装依赖（含inotify-tools） + 编译ubuntu-image ==========
+RUN <<SCRIPT
+set -e
+apt-get install -y --no-install-recommends \
+    debootstrap \
+    schroot \
+    qemu-user-static \
+    binfmt-support \
+    util-linux \
+    mount \
+    procps \
+    apt-transport-https \
+    ca-certificates \
+    git \
+    build-essential \
+    devscripts \
+    debhelper \
+    python3-all \
+    python3-setuptools \
+    python3-wheel \
+    python3-pip \
+    rsync \
+    xz-utils \
+    curl \
+    inotify-tools  # 新增：内核级事件监控工具
 
 tmp_dir=$(mktemp -d)
 cd "${tmp_dir}" || exit 1
-
-# Clone the livecd rootfs fork
-git clone https://github.com/Joshua-Riek/livecd-rootfs
-cd livecd-rootfs || exit 1
-
-# Install build deps
-apt-get update
+git clone --depth 1 https://github.com/canonical/ubuntu-image.git
+cd ubuntu-image || exit 1
+touch ubuntu-image.rst
 apt-get build-dep . -y
-
-# Build the package
 dpkg-buildpackage -us -uc
+apt-get install ../*.deb --assume-yes --allow-downgrades
+dpkg -i ../*.deb
+apt-mark hold ubuntu-image
 
-# Install the custom livecd rootfs package
-apt-get install ../livecd-rootfs_*.deb --assume-yes --allow-downgrades --allow-change-held-packages
-dpkg -i ../livecd-rootfs_*.deb
-apt-mark hold livecd-rootfs
-
+cd /
 rm -rf "${tmp_dir}"
+command -v ubuntu-image || exit 1
 
-popd
+SCRIPT
 
-mkdir -p live-build && cd live-build
+WORKDIR /rootfs-build
+DOCKERFILE_EOF
 
-# Query the system to locate livecd-rootfs auto script installation path
-cp -r "$(dpkg -L livecd-rootfs | grep "auto$")" auto
+# 执行Docker Build
+docker build \
+    --no-cache \
+    --pull \
+    --progress=plain \
+    -t "${DOCKER_IMAGE}" \
+    "${DOCKERFILE_DIR}"
+rm -rf "${DOCKERFILE_DIR}"
 
-set +e
+# ===================== 第二步：Docker Run（inotify监控chroot创建） =====================
+echo -e "\n=== 第二步：Docker Run 构建Rootfs ==="
+CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 
-export ARCH=arm64
-export IMAGEFORMAT=none
-export IMAGE_TARGETS=none
+cat > "${CONTAINER_SCRIPT}" << 'SCRIPT_EOF'
+set -e
+# 仅清理，不创建chroot
+rm -rf /rootfs-build/build/chroot/* || true
+rm -rf /rootfs-build/build/chroot || true
 
-# Populate the configuration directory for live build
-lb config \
-    --architecture arm64 \
-    --bootstrap-qemu-arch arm64 \
-    --bootstrap-qemu-static /usr/bin/qemu-aarch64-static \
-    --archive-areas "main restricted universe multiverse" \
-    --parent-archive-areas "main restricted universe multiverse" \
-    --mirror-bootstrap "http://ports.ubuntu.com" \
-    --parent-mirror-bootstrap "http://ports.ubuntu.com" \
-    --mirror-chroot-security "http://ports.ubuntu.com" \
-    --parent-mirror-chroot-security "http://ports.ubuntu.com" \
-    --mirror-binary-security "http://ports.ubuntu.com" \
-    --parent-mirror-binary-security "http://ports.ubuntu.com" \
-    --mirror-binary "http://ports.ubuntu.com" \
-    --parent-mirror-binary "http://ports.ubuntu.com" \
-    --keyring-packages ubuntu-keyring \
-    --linux-flavours "${KERNEL_FLAVOR}"
+# 关键修复1：配置binfmt（适配Ubuntu 25.04）
+mkdir -p /proc/sys/fs/binfmt_misc
+mount -t binfmt_misc none /proc/sys/fs/binfmt_misc || true
+update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-aarch64-static \
+    --magic '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00' \
+    --mask '\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff' \
+    --credentials yes --fix-binary yes
+update-binfmts --enable qemu-aarch64 || true
+/usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static不存在"; exit 1; }
 
-if [ "${SUITE}" == "noble" ] || [ "${SUITE}" == "jammy" ]; then
-    # Pin rockchip package archives
-    (
-        echo "Package: *"
-        echo "Pin: release o=LP-PPA-jjriek-rockchip"
-        echo "Pin-Priority: 1001"
-        echo ""
-        echo "Package: *"
-        echo "Pin: release o=LP-PPA-jjriek-rockchip-multimedia"
-        echo "Pin-Priority: 1001"
-    ) > config/archives/extra-ppas.pref.chroot
-fi
-
-if [ "${SUITE}" == "noble" ]; then
-    # Ignore custom ubiquity package (mistake i made, uploaded to wrong ppa)
-    (
-        echo "Package: oem-*"
-        echo "Pin: release o=LP-PPA-jjriek-rockchip-multimedia"
-        echo "Pin-Priority: -1"
-        echo ""
-        echo "Package: ubiquity*"
-        echo "Pin: release o=LP-PPA-jjriek-rockchip-multimedia"
-        echo "Pin-Priority: -1"
-
-    ) > config/archives/extra-ppas-ignore.pref.chroot
-fi
-
-# Snap packages to install
+# 关键修复2：inotify内核级监控（替代轮询，最稳定）
+# 监控build目录的「目录创建」事件，捕获chroot创建后立即复制qemu
 (
-    echo "snapd/classic=stable"
-    echo "core22/classic=stable"
-    echo "lxd/classic=stable"
-) > config/seeded-snaps
+    # 等待chroot目录创建（内核事件触发，无轮询）
+    inotifywait -m -r -e CREATE,ISDIR --format '%w%f' /rootfs-build/build | while read dir; do
+        # 检测是否是chroot目录创建
+        if [[ "$dir" == "/rootfs-build/build/chroot" ]]; then
+            echo "✅ 内核检测到chroot目录创建，等待子目录初始化..."
+            # 等待chroot/usr/bin创建（debootstrap会初始化目录结构）
+            until [ -d "/rootfs-build/build/chroot/usr/bin" ]; do sleep 0.1; done
+            # 复制qemu到chroot（解决/bin/true执行失败）
+            cp /usr/bin/qemu-aarch64-static /rootfs-build/build/chroot/usr/bin/
+            chmod +x /rootfs-build/build/chroot/usr/bin/qemu-aarch64-static
+            echo "✅ qemu已复制到chroot，停止监控"
+            # 停止inotify监控（避免僵尸进程）
+            pkill inotifywait
+            exit 0
+        fi
+    done
+) &
+MONITOR_PID=$!
 
-# Generic packages to install
-echo "software-properties-common" > config/package-lists/my.list.chroot
-
-if [ "${PROJECT}" == "ubuntu" ]; then
-    # Specific packages to install for ubuntu desktop
-    (
-        echo "ubuntu-desktop-rockchip"
-        echo "oem-config-gtk"
-        echo "ubiquity-frontend-gtk"
-        echo "ubiquity-slideshow-ubuntu"
-        echo "localechooser-data"
-    ) >> config/package-lists/my.list.chroot
-else
-    # Specific packages to install for ubuntu server
-    echo "ubuntu-server-rockchip" >> config/package-lists/my.list.chroot
+# 执行ubuntu-image（核心：由它创建chroot，inotify实时捕获）
+if ! ubuntu-image --debug \
+    --workdir /rootfs-build/build \
+    --output-dir /rootfs-build/build/img \
+    classic /rootfs-build/definitions/ubuntu-rootfs-plucky.yaml; then
+  echo -e "\n❌ ubuntu-image失败，打印debootstrap日志："
+  [ -f "/rootfs-build/build/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "日志不存在"
+  pkill inotifywait || true  # 终止监控进程
+  kill $MONITOR_PID || true
+  exit 1
 fi
 
-# Build the rootfs
-lb build
+# 等待监控进程正常结束
+wait $MONITOR_PID || true
 
-set -eE 
+# 打包rootfs
+tar -cJf /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz \
+    -p -C /rootfs-build/build/chroot . \
+    --sort=name \
+    --xattrs
 
-# Tar the entire rootfs
-(cd chroot/ &&  tar -p -c --sort=name --xattrs ./*) | xz -3 -T0 > "ubuntu-${RELASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
-mv "ubuntu-${RELASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz" ../
+ls -lh /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz
+SCRIPT_EOF
+
+# 执行Docker Run
+docker run --rm -i \
+    --privileged \
+    --cap-add=ALL \
+    -v "${HOST_ROOTFS_ROOT}:/rootfs-build" \
+    -v "${BUILD_DIR}:/rootfs-build/build" \
+    -v "${CONTAINER_SCRIPT}:/tmp/run-script.sh:ro" \
+    "${DOCKER_IMAGE}" \
+    /bin/bash /tmp/run-script.sh
+
+rm -f "${CONTAINER_SCRIPT}"
+
+# ===================== 最终验证 =====================
+set +x
+if [ -f "${FINAL_TAR_PATH}" ]; then
+    echo -e "\n🎉 构建成功！"
+    echo "产物路径：${FINAL_TAR_PATH}"
+    echo "产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
+else
+    echo -e "\n❌ 构建失败：未生成产物文件" >&2
+    exit 1
+fi
