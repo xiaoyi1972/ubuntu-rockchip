@@ -100,7 +100,7 @@ docker build \
     "${DOCKERFILE_DIR}"
 rm -rf "${DOCKERFILE_DIR}"
 
-# ===================== 第二步：Docker Run（删除qemu的chmod/chown） =====================
+# ===================== 第二步：Docker Run（替换为指定的inotify逻辑） =====================
 echo -e "\n=== 第二步：Docker Run 构建Rootfs ==="
 CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 
@@ -134,16 +134,20 @@ update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-a
 update-binfmts --enable qemu-aarch64 || true
 /usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static不存在"; exit 1; }
 
-# 关键修复2：inotify监控（仅复制qemu，删除chmod/chown）
+# 关键修复2：替换为指定的inotify监控逻辑
+# 等待chroot目录创建（内核事件触发，无轮询）
 (
     inotifywait -m -r -e CREATE,ISDIR --format '%w%f' /rootfs-build/build | while read dir; do
+        # 检测是否是chroot目录创建
         if [[ "$dir" == "/rootfs-build/build/chroot" ]]; then
-            echo "✅ 内核检测到chroot目录创建，立即复制qemu..."
-            # 临时创建子目录（仅为放qemu，不影响ubuntu-image）
-            mkdir -p /rootfs-build/build/chroot/usr/bin
-            # 仅保留cp，删除chmod/chown
+            echo "✅ 内核检测到chroot目录创建，等待子目录初始化..."
+            # 等待chroot/usr/bin创建（debootstrap会初始化目录结构）
+            until [ -d "/rootfs-build/build/chroot/usr/bin" ]; do sleep 0.1; done
+            # 复制qemu到chroot（解决/bin/true执行失败）
             cp /usr/bin/qemu-aarch64-static /rootfs-build/build/chroot/usr/bin/
+            chmod +x /rootfs-build/build/chroot/usr/bin/qemu-aarch64-static
             echo "✅ qemu已复制到chroot，停止监控"
+            # 停止inotify监控（避免僵尸进程）
             pkill inotifywait
             exit 0
         fi
