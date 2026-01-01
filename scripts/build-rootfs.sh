@@ -8,6 +8,8 @@ DOCKER_IMAGE="ubuntu-image-builder:plucky"
 YAML_FILE="${HOST_ROOTFS_ROOT}/definitions/tweaks.sh"  # 修正为实际tweaks.sh路径
 BUILD_DIR="${HOST_ROOTFS_ROOT}/build"
 FINAL_TAR_PATH="${BUILD_DIR}/final/ubuntu-25.04-preinstalled-server.tar.xz"
+TMPFS_SIZE="8G"  # tmpfs目标大小
+MEM_THRESHOLD_GB=8  # 内存阈值：≥8G启用tmpfs，否则禁用
 
 # ===================== 前置检查 + 宿主机层面清理 =====================
 if [ ! -f "${YAML_FILE}" ]; then
@@ -97,19 +99,24 @@ docker build \
     "${DOCKERFILE_DIR}"
 rm -rf "${DOCKERFILE_DIR}"
 
-# ===================== 第二步：Docker Run（tmpfs + trap清理 + inotify监控） =====================
-echo -e "\n=== 第二步：Docker Run 构建Rootfs（tmpfs加速 + 自动清理） ==="
+# ===================== 第二步：Docker Run（内存检查+动态tmpfs） =====================
+echo -e "\n=== 第二步：Docker Run 构建Rootfs（智能tmpfs适配） ==="
 CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 
 cat > "${CONTAINER_SCRIPT}" << 'SCRIPT_EOF'
 #!/bin/bash
 set -eE
 
+# ===================== 配置参数（与宿主机一致） =====================
+TMPFS_SIZE="8G"
+MEM_THRESHOLD_GB=8
+USE_TMPFS=true  # 默认启用tmpfs，内存不足时禁用
+
 # ===================== 核心：定义cleanup函数（清理tmpfs） =====================
 cleanup() {
-    echo -e "\n🔍 触发清理逻辑，卸载tmpfs..."
-    # 安全卸载tmpfs（忽略卸载失败）
-    if mount | grep -q "/rootfs-build/build type tmpfs"; then
+    echo -e "\n🔍 触发清理逻辑..."
+    # 仅当启用tmpfs时才卸载
+    if [ "$USE_TMPFS" = true ] && mount | grep -q "/rootfs-build/build type tmpfs"; then
         umount /rootfs-build/build || echo "⚠️ tmpfs卸载失败（可能已卸载）"
         echo "✅ tmpfs已成功卸载"
     fi
@@ -121,16 +128,34 @@ cleanup() {
 # ===================== 绑定信号：EXIT/INT/TERM/QUIT均触发cleanup =====================
 trap 'cleanup' EXIT INT TERM QUIT
 
-# ===================== 1. 初始化 + 挂载tmpfs =====================
-# 清理旧目录
+# ===================== 1. 内存检查（核心新增） =====================
+echo "📊 检查系统内存..."
+# 获取总内存（KB），转换为GB（四舍五入保留1位小数）
+TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+TOTAL_MEM_GB=$(echo "scale=1; $TOTAL_MEM_KB / 1024 / 1024" | bc)
+echo "系统总内存：${TOTAL_MEM_GB}G，阈值：${MEM_THRESHOLD_GB}G"
+
+# 内存不足时禁用tmpfs
+if (( $(echo "$TOTAL_MEM_GB < $MEM_THRESHOLD_GB" | bc -l) )); then
+    echo "⚠️ 内存不足（<${MEM_THRESHOLD_GB}G），自动禁用tmpfs，使用磁盘存储"
+    USE_TMPFS=false
+else
+    echo "✅ 内存充足，将启用${TMPFS_SIZE} tmpfs加速"
+fi
+
+# ===================== 2. 初始化目录 + 动态挂载tmpfs =====================
 rm -rf /rootfs-build/build/*
 mkdir -p /rootfs-build/build /rootfs-build/build/img /rootfs-build/build/final
 
-# 挂载tmpfs（内存文件系统，加速IO）
-echo "✅ 挂载tmpfs到/rootfs-build/build（size=4G）"
-mount -t tmpfs -o size=4G,mode=755,uid=0,gid=0 tmpfs /rootfs-build/build
+# 仅当启用时挂载tmpfs
+if [ "$USE_TMPFS" = true ]; then
+    mount -t tmpfs -o size=${TMPFS_SIZE},mode=755,uid=0,gid=0 tmpfs /rootfs-build/build
+    echo "✅ tmpfs已挂载到/rootfs-build/build"
+else
+    echo "📁 使用磁盘目录/rootfs-build/build（无tmpfs加速）"
+fi
 
-# ===================== 2. 修复tweaks.sh权限 + 属主 =====================
+# ===================== 3. 修复tweaks.sh权限 + 属主 =====================
 TWEAKS_FILE="/rootfs-build/definitions/tweaks.sh"
 if [ -f "${TWEAKS_FILE}" ]; then
     chmod +x "${TWEAKS_FILE}"
@@ -141,7 +166,7 @@ else
     echo "⚠️ 未找到tweaks.sh文件：${TWEAKS_FILE}"
 fi
 
-# ===================== 3. 配置binfmt（适配Ubuntu 25.04） =====================
+# ===================== 4. 配置binfmt（适配Ubuntu 25.04） =====================
 mkdir -p /proc/sys/fs/binfmt_misc
 mount -t binfmt_misc none /proc/sys/fs/binfmt_misc || true
 update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-aarch64-static \
@@ -151,7 +176,7 @@ update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-a
 update-binfmts --enable qemu-aarch64 || true
 /usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static不存在"; exit 1; }
 
-# ===================== 4. inotify内核级监控chroot创建 =====================
+# ===================== 5. inotify内核级监控chroot创建 =====================
 (
     inotifywait -m -r -e CREATE,ISDIR --format '%w%f' /rootfs-build/build | while read dir; do
         if [[ "$dir" == "/rootfs-build/build/chroot" ]]; then
@@ -167,7 +192,7 @@ update-binfmts --enable qemu-aarch64 || true
 ) &
 MONITOR_PID=$!
 
-# ===================== 5. 执行ubuntu-image =====================
+# ===================== 6. 执行ubuntu-image =====================
 echo "🚀 执行ubuntu-image构建..."
 if ! ubuntu-image --debug \
     --workdir /rootfs-build/build \
@@ -179,7 +204,7 @@ if ! ubuntu-image --debug \
   exit 1
 fi
 
-# ===================== 6. 等待监控进程 + 打包 =====================
+# ===================== 7. 等待监控进程 + 打包 =====================
 if ps -p $MONITOR_PID > /dev/null; then
     wait $MONITOR_PID || true
 fi
@@ -192,7 +217,7 @@ tar -cJf /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz \
 
 # 验证打包结果
 ls -lh /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz
-echo "🎉 构建成功！tmpfs清理将由trap自动触发"
+echo "🎉 构建成功！$( [ "$USE_TMPFS" = true ] && echo "tmpfs清理将由trap自动触发" || echo "未使用tmpfs，无需卸载" )"
 SCRIPT_EOF
 
 # 执行容器（--privileged确保挂载权限）
@@ -215,6 +240,7 @@ if [ -f "${FINAL_TAR_PATH}" ]; then
     echo "🎉 整体构建成功！"
     echo "📁 产物路径：${FINAL_TAR_PATH}"
     echo "📏 产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
+    echo "⚡ tmpfs状态：$( [ -f "/tmp/use_tmpfs" ] && echo "已启用" || echo "已禁用" )"
     echo "========================================"
 else
     echo -e "\n❌ 构建失败：未生成最终产物" >&2
