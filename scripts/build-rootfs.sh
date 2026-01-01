@@ -2,7 +2,7 @@
 set -eE
 trap 'echo "❌ 宿主机脚本异常退出"; exit 1' EXIT INT TERM QUIT
 
-# ===================== 基础配置（YAML文件名由SUITE自动拼接） =====================
+# ===================== 基础配置（YAML文件名由FLAVOR自动拼接） =====================
 HOST_ROOTFS_ROOT=$(cd $(dirname $0)/.. && pwd -P)
 DOCKER_IMAGE="ubuntu-image-builder:plucky"
 BUILD_DIR="${HOST_ROOTFS_ROOT}/build"  # 磁盘构建/产物目录
@@ -11,7 +11,7 @@ BUILD_DIR="${HOST_ROOTFS_ROOT}/build"  # 磁盘构建/产物目录
 DEFINITIONS_DIR_HOST="${HOST_ROOTFS_ROOT}/definitions"       # 宿主机definitions目录
 DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"        # 容器内definitions目录
 
-# 检查父脚本导出的核心环境变量（仅需RELEASE_VERSION和SUITE）
+# 检查父脚本导出的核心环境变量（仅需RELEASE_VERSION和FLAVOR）
 REQUIRED_ENVS=("RELEASE_VERSION" "FLAVOR")
 for env in "${REQUIRED_ENVS[@]}"; do
     if [ -z "${!env}" ]; then
@@ -21,8 +21,8 @@ for env in "${REQUIRED_ENVS[@]}"; do
     fi
 done
 
-# 自动拼接关键路径（核心：YAML文件名=ubuntu-rootfs-${SUITE}.yaml）
-FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
+# 自动拼接关键路径（核心：YAML文件名=ubuntu-rootfs-${FLAVOR}.yaml）
+FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
 TWEAKS_FILE="${DEFINITIONS_DIR_HOST}/tweaks.sh"                     # 宿主机tweaks路径
 YAML_CONFIG_FILENAME="ubuntu-rootfs-${FLAVOR}.yaml"                  # 自动拼接YAML文件名
 YAML_CONFIG_FILE_HOST="${DEFINITIONS_DIR_HOST}/${YAML_CONFIG_FILENAME}"  # 宿主机YAML完整路径
@@ -38,7 +38,7 @@ fi
 # 检查自动拼接后的YAML配置文件
 if [ ! -f "${YAML_CONFIG_FILE_HOST}" ]; then
     echo "ERROR: YAML配置文件不存在 → ${YAML_CONFIG_FILE_HOST}" >&2
-    echo "请确认SUITE=${SUITE}对应的YAML文件（${YAML_CONFIG_FILENAME}）存在于definitions目录" >&2
+    echo "请确认FLAVOR=${FLAVOR}对应的YAML文件（${YAML_CONFIG_FILENAME}）存在于definitions目录" >&2
     exit 1
 fi
 
@@ -79,10 +79,6 @@ apt-get install -y --no-install-recommends \
     build-essential \
     devscripts \
     debhelper \
-    python3-all \
-    python3-setuptools \
-    python3-wheel \
-    python3-pip \
     rsync \
     xz-utils \
     curl \
@@ -128,8 +124,8 @@ set -eE
 BUILD_DIR="/rootfs-build/build"
 DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"
 
-# 检查父脚本传递的环境变量（仅RELEASE_VERSION和SUITE）
-REQUIRED_ENVS=("RELEASE_VERSION" "SUITE")
+# 检查父脚本传递的环境变量（仅RELEASE_VERSION和FLAVOR）
+REQUIRED_ENVS=("RELEASE_VERSION" "FLAVOR")
 for env in "${REQUIRED_ENVS[@]}"; do
     if [ -z "${!env}" ]; then
         echo "ERROR: 容器内${env}环境变量未传递！" >&2
@@ -137,10 +133,10 @@ for env in "${REQUIRED_ENVS[@]}"; do
     fi
 done
 
-# 容器内自动拼接路径（核心：YAML文件名=ubuntu-rootfs-${SUITE}.yaml）
-FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
+# 容器内自动拼接路径（核心：YAML文件名=ubuntu-rootfs-${FLAVOR}.yaml）
+FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
 TWEAKS_FILE="${DEFINITIONS_DIR_CONTAINER}/tweaks.sh"
-YAML_CONFIG_FILENAME="ubuntu-rootfs-${SUITE}.yaml"                  # 自动拼接YAML文件名
+YAML_CONFIG_FILENAME="ubuntu-rootfs-${FLAVOR}.yaml"                  # 自动拼接YAML文件名
 YAML_CONFIG_FILE="${DEFINITIONS_DIR_CONTAINER}/${YAML_CONFIG_FILENAME}"  # 容器内YAML完整路径
 
 # ===================== 清理函数 =====================
@@ -211,7 +207,7 @@ if ps -p $MONITOR_PID > /dev/null; then
     wait $MONITOR_PID || true
 fi
 
-echo "📦 打包rootfs（版本：${RELEASE_VERSION}，套件：${SUITE}）..."
+echo "📦 打包rootfs（版本：${RELEASE_VERSION}，Flavor：${FLAVOR}）..."
 tar -cJf ${FINAL_TAR_PATH} \
     -p -C "${BUILD_DIR}/chroot" . \
     --sort=name \
@@ -223,12 +219,12 @@ ls -lh ${FINAL_TAR_PATH}
 echo "🎉 构建成功！产物路径：${FINAL_TAR_PATH}"
 SCRIPT_EOF
 
-# 执行容器：仅传递RELEASE_VERSION和SUITE（删除指定注释）
+# 执行容器：仅传递RELEASE_VERSION和FLAVOR
 docker run --rm -i \
     --privileged \
     --cap-add=ALL \
     -e RELEASE_VERSION="${RELEASE_VERSION}" \
-    -e SUITE="${SUITE}" \
+    -e FLAVOR="${FLAVOR}" \
     -v "${HOST_ROOTFS_ROOT}:/rootfs-build" \
     -v "${BUILD_DIR}:/rootfs-build/build" \
     -v "${CONTAINER_SCRIPT}:/tmp/run-script.sh:ro" \
@@ -245,7 +241,7 @@ if [ -f "${FINAL_TAR_PATH}" ]; then
     echo "🎉 整体构建成功！"
     echo "📁 产物路径：${FINAL_TAR_PATH}"
     echo "📏 产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
-    echo "✅ 版本：${RELEASE_VERSION} | 套件：${SUITE} | YAML：${YAML_CONFIG_FILENAME}"
+    echo "✅ 版本：${RELEASE_VERSION} | Flavor：${FLAVOR} | YAML：${YAML_CONFIG_FILENAME}"
     echo "========================================"
 else
     echo -e "\n❌ 构建失败：未生成产物" >&2
