@@ -1,0 +1,45 @@
+name: ubuntu-rootfs
+display-name: Ubuntu rootfs ARM64
+revision: 1
+architecture: arm64
+series: plucky
+class: preinstalled
+rootfs:
+  archive: ubuntu
+  # sources-list-deb822: true
+  components:
+    - main
+    - restricted
+    - universe
+    - multiverse
+  mirror: "http://ports.ubuntu.com/ubuntu-ports"
+  # mirror: "http://mirrors.aliyun.com/ubuntu-ports/"
+  pocket: updates
+  seed:
+    urls:
+      - "https://git.launchpad.net/~ubuntu-core-dev/ubuntu-seeds/+git/"
+    branch: plucky
+    names:
+      - server
+      - minimal
+      - standard
+      - cloud-image
+customization:
+  manual:
+    copy-file:
+      - source: tweaks.sh
+        destination: /tweaks.sh 
+    execute:
+      - path: /tweaks.sh
+  extra-packages:
+    - name: "u-boot-tools"
+    - name: "u-boot-menu"
+    - name: "initramfs-tools"
+  extra-snaps:
+    - name: snapd
+    - name: lxd
+    - name: core22
+    - name: core24
+# rootfs-tarball:
+#  name: ubuntu-25.04-preinstalled-desktop-arm64.tar.xz
+#  compression: xz

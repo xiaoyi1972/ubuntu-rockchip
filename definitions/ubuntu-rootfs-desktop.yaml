@@ -20,7 +20,10 @@ rootfs:
       - "https://git.launchpad.net/~ubuntu-core-dev/ubuntu-seeds/+git/"
     branch: plucky
     names:
+      - desktop
+      - desktop-minimal
       - minimal
+      - standard
 customization:
   manual:
     copy-file:
@@ -51,8 +54,6 @@ customization:
     - name: gnome-42-2204
     - name: gtk-common-themes
     - name: thunderbird
-artifacts:
-  tar:
-    name: ubuntu-25.04-preinstalled-desktop-arm64.tar.xz
-    compression: xz
-    #tar-args: ["-p", "-c", "--sort=name", "--xattrs"]
+# rootfs-tarball:
+#  name: ubuntu-25.04-preinstalled-desktop-arm64.tar.xz
+#  compression: xz
