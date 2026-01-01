@@ -2,24 +2,35 @@
 set -eE
 trap 'echo "❌ 宿主机脚本异常退出"; exit 1' EXIT INT TERM QUIT
 
-# ===================== 基础配置 =====================
+# ===================== 基础配置（使用父脚本导出的SUITE环境变量） =====================
 HOST_ROOTFS_ROOT=$(cd $(dirname $0)/.. && pwd -P)
 DOCKER_IMAGE="ubuntu-image-builder:plucky"
-YAML_FILE="${HOST_ROOTFS_ROOT}/definitions/tweaks.sh"  # 修正为实际tweaks.sh路径
-BUILD_DIR="${HOST_ROOTFS_ROOT}/build"
-FINAL_TAR_PATH="${BUILD_DIR}/final/ubuntu-25.04-preinstalled-server.tar.xz"
-TMPFS_SIZE="8G"  # tmpfs目标大小
-MEM_THRESHOLD_GB=8  # 内存阈值：≥8G启用tmpfs，否则禁用
+YAML_FILE="${HOST_ROOTFS_ROOT}/definitions/tweaks.sh"
+BUILD_DIR="${HOST_ROOTFS_ROOT}/build"  # 宿主机磁盘目录（存产物）
 
-# ===================== 前置检查 + 宿主机层面清理 =====================
-if [ ! -f "${YAML_FILE}" ]; then
-    echo "ERROR: YAML/tweaks.sh文件不存在 → ${YAML_FILE}" >&2
+# 检查SUITE是否由父脚本导出
+if [ -z "${SUITE}" ]; then
+    echo "ERROR: SUITE环境变量未定义！请从父脚本导出（如export SUITE=server）" >&2
     exit 1
 fi
-rm -rf "${BUILD_DIR}"/*
-mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/img" "${BUILD_DIR}/final"
 
-# ===================== 第一步：Docker Build（添加bc依赖 + 多线程编译） =====================
+# 产物路径：宿主机磁盘目录（不受tmpfs影响）
+FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-25.04-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
+TMPFS_SIZE="8G"
+MEM_THRESHOLD_GB=8
+# 容器内临时构建目录（挂载tmpfs）
+CONTAINER_TMP_DIR="/rootfs-build/build_tmp"
+
+# ===================== 前置检查 + 清理 =====================
+if [ ! -f "${YAML_FILE}" ]; then
+    echo "ERROR: tweaks.sh文件不存在 → ${YAML_FILE}" >&2
+    exit 1
+fi
+# 仅清理产物目录的旧文件，保留目录结构
+rm -rf "${BUILD_DIR}/"*.tar.xz
+mkdir -p "${BUILD_DIR}"
+
+# ===================== 第一步：Docker Build（无多余注释） =====================
 echo -e "\n=== 第一步：Docker Build 构建镜像 ==="
 DOCKERFILE_DIR=$(mktemp -d)
 
@@ -27,25 +38,15 @@ cat > "${DOCKERFILE_DIR}/Dockerfile" << 'DOCKERFILE_EOF'
 FROM ubuntu:25.04
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ========== 换源逻辑（保留注释） ==========
 RUN <<SCRIPT
 set -e
-# mkdir -p /etc/apt/backup
-# cp /etc/apt/sources.list /etc/apt/backup/sources.list.bak 2>/dev/null || true
-# cp /etc/apt/sources.list.d/* /etc/apt/backup/sources.list.d/ 2>/dev/null || true
-
+# 换源逻辑（保留必要注释）
 # sed -i.bak 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
 # sed -i 's@http://security.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
-# if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-#    sed -i.bak 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
-#    sed -i 's@http://security.ubuntu.com/ubuntu/@g' /etc/apt/sources.list.d/ubuntu.sources
-# fi
-
-# grep -E "mirrors.aliyun.com" /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
 apt-get update -y -qq
 SCRIPT
 
-# ========== 安装依赖（添加bc） + 多线程编译ubuntu-image ==========
+# 安装依赖（包含bc，无多余注释）
 RUN <<SCRIPT
 set -e
 apt-get install -y --no-install-recommends \
@@ -100,7 +101,7 @@ docker build \
     "${DOCKERFILE_DIR}"
 rm -rf "${DOCKERFILE_DIR}"
 
-# ===================== 第二步：Docker Run（内存检查+动态tmpfs） =====================
+# ===================== 第二步：Docker Run（分离tmpfs和产物目录） =====================
 echo -e "\n=== 第二步：Docker Run 构建Rootfs（智能tmpfs适配） ==="
 CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 
@@ -108,66 +109,79 @@ cat > "${CONTAINER_SCRIPT}" << 'SCRIPT_EOF'
 #!/bin/bash
 set -eE
 
-# ===================== 配置参数（与宿主机一致） =====================
+# 配置参数
 TMPFS_SIZE="8G"
 MEM_THRESHOLD_GB=8
-USE_TMPFS=true  # 默认启用tmpfs，内存不足时禁用
+USE_TMPFS=true
+CONTAINER_TMP_DIR="/rootfs-build/build_tmp"  # 临时构建目录（tmpfs）
+CONTAINER_OUTPUT_DIR="/rootfs-build/build"   # 产物目录（宿主机磁盘）
 
-# ===================== 核心：定义cleanup函数（清理tmpfs） =====================
+# 检查SUITE环境变量
+if [ -z "${SUITE}" ]; then
+    echo "ERROR: 容器内SUITE环境变量未传递！" >&2
+    exit 1
+fi
+# 产物路径：输出到宿主机磁盘目录（不受tmpfs影响）
+FINAL_TAR_PATH="${CONTAINER_OUTPUT_DIR}/ubuntu-25.04-preinstalled-${SUITE}-arm64.rootfs.tar.xz"
+
+# ===================== 核心修复：清理函数仅卸载临时tmpfs，保留产物 =====================
 cleanup() {
     echo -e "\n🔍 触发清理逻辑..."
-    # 仅当启用tmpfs时才卸载
-    if [ "$USE_TMPFS" = true ] && mount | grep -q "/rootfs-build/build type tmpfs"; then
-        umount /rootfs-build/build || echo "⚠️ tmpfs卸载失败（可能已卸载）"
-        echo "✅ tmpfs已成功卸载"
+    # 仅卸载临时构建目录的tmpfs，产物目录不受影响
+    if [ "$USE_TMPFS" = true ] && mount | grep -q "${CONTAINER_TMP_DIR} type tmpfs"; then
+        umount "${CONTAINER_TMP_DIR}" || echo "⚠️ 临时tmpfs卸载失败（可能已卸载）"
+        echo "✅ 临时构建目录tmpfs已成功卸载"
     fi
     # 清理残留进程
     pkill inotifywait || true
-    echo "✅ 清理完成"
+    # 清理临时目录（可选，产物已在磁盘）
+    rm -rf "${CONTAINER_TMP_DIR}" || true
+    echo "✅ 清理完成（产物保留在${CONTAINER_OUTPUT_DIR}）"
 }
 
-# ===================== 绑定信号：EXIT/INT/TERM/QUIT均触发cleanup =====================
+# 绑定信号
 trap 'cleanup' EXIT INT TERM QUIT
 
-# ===================== 1. 内存检查（修复bc依赖后） =====================
+# ===================== 内存检查 =====================
 echo "📊 检查系统内存..."
-# 获取总内存（KB），转换为GB（四舍五入保留1位小数）
 TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 TOTAL_MEM_GB=$(echo "scale=1; $TOTAL_MEM_KB / 1024 / 1024" | bc)
 echo "系统总内存：${TOTAL_MEM_GB}G，阈值：${MEM_THRESHOLD_GB}G"
 
-# 内存不足时禁用tmpfs
 if (( $(echo "$TOTAL_MEM_GB < $MEM_THRESHOLD_GB" | bc -l) )); then
-    echo "⚠️ 内存不足（<${MEM_THRESHOLD_GB}G），自动禁用tmpfs，使用磁盘存储"
+    echo "⚠️ 内存不足，禁用tmpfs（使用磁盘临时目录）"
     USE_TMPFS=false
 else
-    echo "✅ 内存充足，将启用${TMPFS_SIZE} tmpfs加速"
+    echo "✅ 内存充足，启用${TMPFS_SIZE} tmpfs（仅用于临时构建）"
 fi
 
-# ===================== 2. 初始化目录 + 动态挂载tmpfs =====================
-rm -rf /rootfs-build/build/*
-mkdir -p /rootfs-build/build /rootfs-build/build/img /rootfs-build/build/final
+# ===================== 初始化目录 =====================
+# 清理并创建临时构建目录
+rm -rf "${CONTAINER_TMP_DIR}"
+mkdir -p "${CONTAINER_TMP_DIR}" "${CONTAINER_TMP_DIR}/img"
+# 确保产物目录存在（宿主机磁盘）
+mkdir -p "${CONTAINER_OUTPUT_DIR}"
 
-# 仅当启用时挂载tmpfs
+# ===================== 挂载tmpfs（仅临时目录） =====================
 if [ "$USE_TMPFS" = true ]; then
-    mount -t tmpfs -o size=${TMPFS_SIZE},mode=755,uid=0,gid=0 tmpfs /rootfs-build/build
-    echo "✅ tmpfs已挂载到/rootfs-build/build"
+    mount -t tmpfs -o size=${TMPFS_SIZE},mode=755,uid=0,gid=0 tmpfs "${CONTAINER_TMP_DIR}"
+    echo "✅ tmpfs已挂载到临时目录：${CONTAINER_TMP_DIR}"
 else
-    echo "📁 使用磁盘目录/rootfs-build/build（无tmpfs加速）"
+    echo "📁 使用磁盘临时目录：${CONTAINER_TMP_DIR}"
 fi
 
-# ===================== 3. 修复tweaks.sh权限 + 属主 =====================
+# ===================== 修复tweaks.sh权限 =====================
 TWEAKS_FILE="/rootfs-build/definitions/tweaks.sh"
-if [ -f "${TWEAKS_FILE}" ]; then
-    chmod +x "${TWEAKS_FILE}"
-    chown root:root "${TWEAKS_FILE}"
-    echo "✅ 已修复tweaks.sh：执行权限(+x) + 属主(root:root)"
-    ls -l "${TWEAKS_FILE}"
+if [ -f "$TWEAKS_FILE" ]; then
+    chmod +x "$TWEAKS_FILE"
+    chown root:root "$TWEAKS_FILE"
+    echo "✅ 已修复tweaks.sh权限"
+    ls -l "$TWEAKS_FILE"
 else
-    echo "⚠️ 未找到tweaks.sh文件：${TWEAKS_FILE}"
+    echo "⚠️ 未找到tweaks.sh文件：$TWEAKS_FILE"
 fi
 
-# ===================== 4. 配置binfmt（适配Ubuntu 25.04） =====================
+# ===================== 配置binfmt =====================
 mkdir -p /proc/sys/fs/binfmt_misc
 mount -t binfmt_misc none /proc/sys/fs/binfmt_misc || true
 update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-aarch64-static \
@@ -177,15 +191,15 @@ update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-a
 update-binfmts --enable qemu-aarch64 || true
 /usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static不存在"; exit 1; }
 
-# ===================== 5. inotify内核级监控chroot创建 =====================
+# ===================== inotify监控临时目录的chroot创建 =====================
 (
-    inotifywait -m -r -e CREATE,ISDIR --format '%w%f' /rootfs-build/build | while read dir; do
-        if [[ "$dir" == "/rootfs-build/build/chroot" ]]; then
-            echo "✅ 内核检测到chroot目录创建，等待子目录初始化..."
-            until [ -d "/rootfs-build/build/chroot/usr/bin" ]; do sleep 0.1; done
-            cp /usr/bin/qemu-aarch64-static /rootfs-build/build/chroot/usr/bin/
-            chmod +x /rootfs-build/build/chroot/usr/bin/qemu-aarch64-static
-            echo "✅ qemu已复制到chroot，停止监控"
+    inotifywait -m -r -e CREATE,ISDIR --format '%w%f' "${CONTAINER_TMP_DIR}" | while read dir; do
+        if [[ "$dir" == "${CONTAINER_TMP_DIR}/chroot" ]]; then
+            echo "✅ 检测到chroot创建（临时目录），等待子目录初始化..."
+            until [ -d "${CONTAINER_TMP_DIR}/chroot/usr/bin" ]; do sleep 0.1; done
+            cp /usr/bin/qemu-aarch64-static "${CONTAINER_TMP_DIR}/chroot/usr/bin/"
+            chmod +x "${CONTAINER_TMP_DIR}/chroot/usr/bin/qemu-aarch64-static"
+            echo "✅ qemu已复制到chroot（临时目录）"
             pkill inotifywait
             exit 0
         fi
@@ -193,40 +207,43 @@ update-binfmts --enable qemu-aarch64 || true
 ) &
 MONITOR_PID=$!
 
-# ===================== 6. 执行ubuntu-image =====================
-echo "🚀 执行ubuntu-image构建..."
+# ===================== 执行ubuntu-image（临时目录构建） =====================
+echo "🚀 执行ubuntu-image构建（临时目录：${CONTAINER_TMP_DIR}）..."
 if ! ubuntu-image --debug \
-    --workdir /rootfs-build/build \
-    --output-dir /rootfs-build/build/img \
-    classic /rootfs-build/definitions/ubuntu-rootfs-plucky.yaml; then  # 修正为实际YAML路径
-  echo -e "\n❌ ubuntu-image执行失败，打印日志："
-  [ -f "/rootfs-build/build/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap日志不存在"
-  [ -f "/rootfs-build/build/img/build.log" ] && cat $_ || echo "ubuntu-image日志不存在"
+    --workdir "${CONTAINER_TMP_DIR}" \
+    --output-dir "${CONTAINER_TMP_DIR}/img" \
+    classic /rootfs-build/definitions/ubuntu-rootfs-plucky.yaml; then
+  echo -e "\n❌ ubuntu-image执行失败"
+  [ -f "${CONTAINER_TMP_DIR}/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap日志不存在"
+  [ -f "${CONTAINER_TMP_DIR}/img/build.log" ] && cat $_ || echo "ubuntu-image日志不存在"
   exit 1
 fi
 
-# ===================== 7. 等待监控进程 + 打包 =====================
+# ===================== 等待监控进程 + 打包（产物输出到磁盘） =====================
 if ps -p $MONITOR_PID > /dev/null; then
     wait $MONITOR_PID || true
 fi
 
-echo "📦 打包rootfs到tar.xz..."
-tar -cJf /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz \
-    -p -C /rootfs-build/build/chroot . \
+echo "📦 打包rootfs到磁盘产物目录..."
+tar -cJf ${FINAL_TAR_PATH} \
+    -p -C "${CONTAINER_TMP_DIR}/chroot" . \
     --sort=name \
     --xattrs
 
-# 验证打包结果
-ls -lh /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz
-echo "🎉 构建成功！$( [ "$USE_TMPFS" = true ] && echo "tmpfs清理将由trap自动触发" || echo "未使用tmpfs，无需卸载" )"
+# ===================== 验证产物（磁盘目录） =====================
+echo -e "\n🔍 验证产物（磁盘目录）："
+ls -lh ${FINAL_TAR_PATH}
+echo "🎉 构建成功！产物已保存到磁盘：${FINAL_TAR_PATH}"
+echo "⚠️ 后续清理仅删除临时构建目录，产物不受影响"
 SCRIPT_EOF
 
-# 执行容器（--privileged确保挂载权限）
+# 执行容器：传递SUITE，绑定产物目录（磁盘）
 docker run --rm -i \
     --privileged \
     --cap-add=ALL \
+    -e SUITE="${SUITE}" \
     -v "${HOST_ROOTFS_ROOT}:/rootfs-build" \
-    -v "${BUILD_DIR}:/rootfs-build/build" \
+    -v "${BUILD_DIR}:/rootfs-build/build"  # 产物目录绑定到宿主机磁盘
     -v "${CONTAINER_SCRIPT}:/tmp/run-script.sh:ro" \
     "${DOCKER_IMAGE}" \
     /bin/bash /tmp/run-script.sh
@@ -234,16 +251,19 @@ docker run --rm -i \
 # 清理容器脚本
 rm -f "${CONTAINER_SCRIPT}"
 
-# ===================== 宿主机验证 =====================
+# ===================== 宿主机验证（产物在磁盘） =====================
 set +x
 if [ -f "${FINAL_TAR_PATH}" ]; then
     echo -e "\n========================================"
     echo "🎉 整体构建成功！"
-    echo "📁 产物路径：${FINAL_TAR_PATH}"
+    echo "📁 产物路径（磁盘）：${FINAL_TAR_PATH}"
     echo "📏 产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
+    echo "✅ SUITE：${SUITE}"
+    echo "✅ 产物已保存到磁盘，不受tmpfs清理影响"
     echo "========================================"
 else
     echo -e "\n❌ 构建失败：未生成最终产物" >&2
+    ls -la "${BUILD_DIR}/"
     exit 1
 fi
 
