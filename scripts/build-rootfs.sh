@@ -19,7 +19,7 @@ fi
 rm -rf "${BUILD_DIR}/chroot"
 mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/img" "${BUILD_DIR}/final"
 
-# ===================== 第一步：Docker Build（安装inotify-tools） =====================
+# ===================== 第一步：Docker Build（删除注释 + 多线程编译） =====================
 echo -e "\n=== 第一步：Docker Build 构建镜像 ==="
 DOCKERFILE_DIR=$(mktemp -d)
 
@@ -32,7 +32,7 @@ RUN <<SCRIPT
 set -e
 # mkdir -p /etc/apt/backup
 # cp /etc/apt/sources.list /etc/apt/backup/sources.list.bak 2>/dev/null || true
-# cp /etc/apt/sources.list.d/* /etc/apt/backup/ 2>/dev/null || true
+# cp /etc/apt/sources.list.d/* /etc/apt/backup/sources.list.d/ 2>/dev/null || true
 
 # sed -i.bak 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
 # sed -i 's@http://security.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
@@ -45,7 +45,7 @@ set -e
 apt-get update -y -qq
 SCRIPT
 
-# ========== 安装依赖（含inotify-tools） + 编译ubuntu-image ==========
+# ========== 安装依赖 + 多线程编译ubuntu-image（删除所有行内注释） ==========
 RUN <<SCRIPT
 set -e
 apt-get install -y --no-install-recommends \
@@ -69,7 +69,7 @@ apt-get install -y --no-install-recommends \
     rsync \
     xz-utils \
     curl \
-    inotify-tools  # 新增：内核级事件监控工具
+    inotify-tools
 
 tmp_dir=$(mktemp -d)
 cd "${tmp_dir}" || exit 1
@@ -77,7 +77,7 @@ git clone --depth 1 https://github.com/canonical/ubuntu-image.git
 cd ubuntu-image || exit 1
 touch ubuntu-image.rst
 apt-get build-dep . -y
-dpkg-buildpackage -us -uc
+dpkg-buildpackage -us -uc -j$(nproc)
 apt-get install ../*.deb --assume-yes --allow-downgrades
 dpkg -i ../*.deb
 apt-mark hold ubuntu-image
@@ -100,7 +100,7 @@ docker build \
     "${DOCKERFILE_DIR}"
 rm -rf "${DOCKERFILE_DIR}"
 
-# ===================== 第二步：Docker Run（inotify监控chroot创建） =====================
+# ===================== 第二步：Docker Run（删除qemu的chmod/chown） =====================
 echo -e "\n=== 第二步：Docker Run 构建Rootfs ==="
 CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 
@@ -109,6 +109,20 @@ set -e
 # 仅清理，不创建chroot
 rm -rf /rootfs-build/build/chroot/* || true
 rm -rf /rootfs-build/build/chroot || true
+
+# ===================== 核心修复：权限+用户组（移到外层） =====================
+TWEAKS_FILE="/rootfs-build/definitions/tweaks.sh"
+if [ -f "${TWEAKS_FILE}" ]; then
+    # 1. 修复执行权限
+    chmod +x "${TWEAKS_FILE}"
+    # 2. 修复属主/属组（关键：确保chroot内root能访问）
+    chown root:root "${TWEAKS_FILE}"
+    echo "✅ 已修复tweaks.sh：执行权限(+x) + 属主(root:root)"
+    # 验证权限和属主
+    ls -l "${TWEAKS_FILE}"
+else
+    echo "⚠️ 未找到tweaks.sh文件：${TWEAKS_FILE}"
+fi
 
 # 关键修复1：配置binfmt（适配Ubuntu 25.04）
 mkdir -p /proc/sys/fs/binfmt_misc
@@ -120,21 +134,16 @@ update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-a
 update-binfmts --enable qemu-aarch64 || true
 /usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static不存在"; exit 1; }
 
-# 关键修复2：inotify内核级监控（替代轮询，最稳定）
-# 监控build目录的「目录创建」事件，捕获chroot创建后立即复制qemu
+# 关键修复2：inotify监控（仅复制qemu，删除chmod/chown）
 (
-    # 等待chroot目录创建（内核事件触发，无轮询）
     inotifywait -m -r -e CREATE,ISDIR --format '%w%f' /rootfs-build/build | while read dir; do
-        # 检测是否是chroot目录创建
         if [[ "$dir" == "/rootfs-build/build/chroot" ]]; then
-            echo "✅ 内核检测到chroot目录创建，等待子目录初始化..."
-            # 等待chroot/usr/bin创建（debootstrap会初始化目录结构）
-            until [ -d "/rootfs-build/build/chroot/usr/bin" ]; do sleep 0.1; done
-            # 复制qemu到chroot（解决/bin/true执行失败）
+            echo "✅ 内核检测到chroot目录创建，立即复制qemu..."
+            # 临时创建子目录（仅为放qemu，不影响ubuntu-image）
+            mkdir -p /rootfs-build/build/chroot/usr/bin
+            # 仅保留cp，删除chmod/chown
             cp /usr/bin/qemu-aarch64-static /rootfs-build/build/chroot/usr/bin/
-            chmod +x /rootfs-build/build/chroot/usr/bin/qemu-aarch64-static
             echo "✅ qemu已复制到chroot，停止监控"
-            # 停止inotify监控（避免僵尸进程）
             pkill inotifywait
             exit 0
         fi
@@ -142,20 +151,26 @@ update-binfmts --enable qemu-aarch64 || true
 ) &
 MONITOR_PID=$!
 
-# 执行ubuntu-image（核心：由它创建chroot，inotify实时捕获）
+# 执行ubuntu-image（YAML内的逻辑由其自行处理）
 if ! ubuntu-image --debug \
     --workdir /rootfs-build/build \
     --output-dir /rootfs-build/build/img \
     classic /rootfs-build/definitions/ubuntu-rootfs-plucky.yaml; then
-  echo -e "\n❌ ubuntu-image失败，打印debootstrap日志："
-  [ -f "/rootfs-build/build/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "日志不存在"
-  pkill inotifywait || true  # 终止监控进程
-  kill $MONITOR_PID || true
+  echo -e "\n❌ ubuntu-image失败，打印日志（若存在）："
+  [ -f "/rootfs-build/build/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap日志不存在"
+  [ -f "/rootfs-build/build/img/build.log" ] && cat $_ || echo "ubuntu-image日志不存在"
+  # 检查进程存在再kill（解决No such process警告）
+  if ps -p $MONITOR_PID > /dev/null; then
+      kill $MONITOR_PID || true
+  fi
+  pkill inotifywait || true
   exit 1
 fi
 
-# 等待监控进程正常结束
-wait $MONITOR_PID || true
+# 检查进程存在再等待（避免警告）
+if ps -p $MONITOR_PID > /dev/null; then
+    wait $MONITOR_PID || true
+fi
 
 # 打包rootfs
 tar -cJf /rootfs-build/build/final/ubuntu-25.04-preinstalled-server.tar.xz \
