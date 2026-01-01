@@ -19,7 +19,7 @@ fi
 rm -rf "${BUILD_DIR}"/*
 mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/img" "${BUILD_DIR}/final"
 
-# ===================== 第一步：Docker Build（多线程编译 + 无多余注释） =====================
+# ===================== 第一步：Docker Build（添加bc依赖 + 多线程编译） =====================
 echo -e "\n=== 第一步：Docker Build 构建镜像 ==="
 DOCKERFILE_DIR=$(mktemp -d)
 
@@ -45,7 +45,7 @@ set -e
 apt-get update -y -qq
 SCRIPT
 
-# ========== 安装依赖 + 多线程编译ubuntu-image ==========
+# ========== 安装依赖（添加bc） + 多线程编译ubuntu-image ==========
 RUN <<SCRIPT
 set -e
 apt-get install -y --no-install-recommends \
@@ -69,7 +69,8 @@ apt-get install -y --no-install-recommends \
     rsync \
     xz-utils \
     curl \
-    inotify-tools
+    inotify-tools \
+    bc
 
 tmp_dir=$(mktemp -d)
 cd "${tmp_dir}" || exit 1
@@ -128,7 +129,7 @@ cleanup() {
 # ===================== 绑定信号：EXIT/INT/TERM/QUIT均触发cleanup =====================
 trap 'cleanup' EXIT INT TERM QUIT
 
-# ===================== 1. 内存检查（核心新增） =====================
+# ===================== 1. 内存检查（修复bc依赖后） =====================
 echo "📊 检查系统内存..."
 # 获取总内存（KB），转换为GB（四舍五入保留1位小数）
 TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
@@ -240,7 +241,6 @@ if [ -f "${FINAL_TAR_PATH}" ]; then
     echo "🎉 整体构建成功！"
     echo "📁 产物路径：${FINAL_TAR_PATH}"
     echo "📏 产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
-    echo "⚡ tmpfs状态：$( [ -f "/tmp/use_tmpfs" ] && echo "已启用" || echo "已禁用" )"
     echo "========================================"
 else
     echo -e "\n❌ 构建失败：未生成最终产物" >&2
