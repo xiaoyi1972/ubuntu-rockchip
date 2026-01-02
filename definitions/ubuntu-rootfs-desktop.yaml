@@ -21,36 +21,34 @@ rootfs:
     names:
       - minimal
       - standard
-  sources-list-deb822: false
 customization:
-  extra-packages:
-    - name: "u-boot-tools"
-    - name: "u-boot-menu"
-    - name: "ubuntu-desktop-minimal"
-    - name: "cloud-initramfs-growroot"
-    - name: "oem-config-gtk"  # 配置界面核心
-    - name: "oem-config"
-    - name: "libgtk-3-0"  # 界面渲染依赖
-    - name: "cloud-init"  # 仅保留核心依赖，无需多余功能
-  extra-snaps:
-    - name: snapd
-    - name: core24
-    - name: gtk-common-themes
+  cloud-init:
+    user-data: |
+      #cloud-config
+      oem-config:
+        enabled: true
+      users:
+        - name: ubuntu
+          sudo: ALL=(ALL) NOPASSWD:ALL
   manual:
     copy-file:
       - source: tweaks.sh
         destination: /tweaks.sh
     execute:
       - path: /tweaks.sh
-  # 最小化 cloud-init 配置（仅触发 oem-config）
-  cloud-init:
-    user-data: |
-      #cloud-config
-      oem-config:
-        enabled: true  # 唯一核心作用：启动 oem-config
-      users:
-        - name: ubuntu  # 给 oem-config 提供默认用户名模板
-          sudo: ALL=(ALL) NOPASSWD:ALL
+  extra-packages:
+    - name: "u-boot-tools"
+    - name: "u-boot-menu"
+    - name: "ubuntu-desktop-minimal"
+    - name: "oem-config-gtk"
+    - name: "oem-config"
+    - name: "libgtk-3-0"
+    - name: "cloud-init"
+    - name: "linux-image-arm64"
+  extra-snaps:
+    - name: snapd
+    - name: core24
+    - name: gtk-common-themes
 # artifacts:
 #  img:
 #    - name: ubuntu-rootfs-arm64.img
