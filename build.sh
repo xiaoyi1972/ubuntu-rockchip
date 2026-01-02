@@ -217,7 +217,7 @@ if [[ ${LAUNCHPAD} != "Y" ]]; then
 fi
 
 # Create the root filesystem
-./scripts/build-rootfs.sh
+bash -x ./scripts/build-rootfs.sh
 
 # Create the disk image
 bash -x ./scripts/config-image.sh
