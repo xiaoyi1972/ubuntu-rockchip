@@ -20,10 +20,12 @@ jobs:
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
       rootfs_matrix: ${{ steps.matrix.outputs.rootfs_matrix }}
     steps:
-      # 移除「清理磁盘空间」步骤
-      - name: Checkout & Prepare
+      # 恢复原版 Checkout code 步骤
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare script permissions
         run: |
-          git clone $GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git .
           chmod +x ./build.sh ./scripts/*.sh
 
       - name: Create build/rootfs matrix
@@ -70,9 +72,13 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /var/lib/apt/lists/* || true
           df -h
 
-      - name: Checkout & Setup
+      # 恢复原版 Checkout code 步骤
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup environment
         run: |
-          git clone $GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git .
+          # 设置脚本权限
           chmod +x ./build.sh ./scripts/*.sh
           # 安装依赖+GH CLI+认证
           sudo apt-get update && sudo apt-get install -y gh \
@@ -157,10 +163,13 @@ jobs:
 
       # 独立Step：上传Rootfs Artifact
       - name: Upload Rootfs Artifact
-        run: |
-          gh artifact upload \
-            --name "${ROOTFS_FILE_PREFIX}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${ROOTFS_ARCH}-rootfs" \
-            --path "$GITHUB_WORKSPACE/build/${{ steps.vars.outputs.rootfs_tar_name }}"
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-rootfs
+          path: ${{ github.workspace }}/build/${{ steps.vars.outputs.rootfs_tar_name }}
+          if-no-files-found: error
+          compression-level: 6
+          overwrite: false
 
       - name: 🧹 清理临时文件
         run: |
@@ -170,7 +179,11 @@ jobs:
 
       - name: Upload Build Log
         if: always()
-        run: gh artifact upload --name "rootfs-build-log-${{ matrix.suite }}-${{ matrix.flavor }}" --path "build-rootfs.log"
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: rootfs-build-log-${{ matrix.suite }}-${{ matrix.flavor }}
+          path: ${{ github.workspace }}/build-rootfs.log
+          if-no-files-found: warn
 
   build:
     runs-on: ubuntu-22.04
@@ -190,9 +203,13 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /var/lib/apt/lists/* || true
           df -h
 
-      - name: Checkout & Setup
+      # 恢复原版 Checkout code 步骤
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup environment
         run: |
-          git clone $GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git .
+          # 设置脚本权限
           chmod +x ./build.sh ./scripts/*.sh
           # 安装依赖+GH CLI+认证
           sudo apt-get update && sudo apt-get install -y gh \
@@ -251,13 +268,16 @@ jobs:
           gh release upload $RELEASE_TAG $GITHUB_WORKSPACE/releases/${{ steps.vars.outputs.deb_zip_name }} --repo $REPO_OWNER/$REPO_NAME --clobber
 
       - name: Verify & Upload Image Artifact
-        run: |
-          echo "=== Images directory contents ==="
-          ls -la $GITHUB_WORKSPACE/images/
-          # 上传Artifact
-          gh artifact upload --name "${ROOTFS_FILE_PREFIX}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${ROOTFS_ARCH}-${{ matrix.board }}" \
-            --path "$GITHUB_WORKSPACE/images/${ROOTFS_FILE_PREFIX}-*-preinstalled-${{ matrix.flavor }}-${ROOTFS_ARCH}-${{ matrix.board }}.*" \
-            --path "$GITHUB_WORKSPACE/images/*.img" --path "$GITHUB_WORKSPACE/images/*.xz"
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: ${{ env.ROOTFS_FILE_PREFIX }}-${{ steps.vars.outputs.suite_version }}-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}
+          path: |
+            ${{ github.workspace }}/images/${{ env.ROOTFS_FILE_PREFIX }}-*-preinstalled-${{ matrix.flavor }}-${{ env.ROOTFS_ARCH }}-${{ matrix.board }}.*
+            ${{ github.workspace }}/images/*.img
+            ${{ github.workspace }}/images/*.xz
+          if-no-files-found: error
+          compression-level: 6
+          overwrite: false
 
       - name: 🧹 清理构建产物
         run: |
@@ -267,4 +287,8 @@ jobs:
 
       - name: Upload Build Log
         if: always()
-        run: gh artifact upload --name "image-build-log-${{ matrix.board }}-${{ matrix.suite }}-${{ matrix.flavor }}" --path "build-image.log"
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: image-build-log-${{ matrix.board }}-${{ matrix.suite }}-${{ matrix.flavor }}
+          path: ${{ github.workspace }}/build-image.log
+          if-no-files-found: warn
