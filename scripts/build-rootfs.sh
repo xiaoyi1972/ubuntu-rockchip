@@ -21,6 +21,10 @@ for env in "${REQUIRED_ENVS[@]}"; do
     fi
 done
 
+if [[ -f ubuntu-${RELASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz ]]; then
+    exit 0
+fi
+
 # 自动拼接关键路径（核心：YAML文件名=ubuntu-rootfs-${FLAVOR}.yaml）
 FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
 TWEAKS_FILE="${DEFINITIONS_DIR_HOST}/tweaks.sh"                     # 宿主机tweaks路径
