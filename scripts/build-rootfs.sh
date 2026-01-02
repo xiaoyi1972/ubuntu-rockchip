@@ -21,7 +21,11 @@ for env in "${REQUIRED_ENVS[@]}"; do
     fi
 done
 
+ls ./
+
+echo "============分界线======="
 mkdir -p build && cd build
+ls ./
 
 if [[ -f ubuntu-${RELASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz ]]; then
     echo "found rootfs.tar.xz"
