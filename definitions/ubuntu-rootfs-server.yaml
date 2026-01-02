@@ -41,10 +41,7 @@ customization:
     - name: "u-boot-tools"
     - name: "u-boot-menu"
     - name: "initramfs-tools"
-    - name: "subiquity"
-    - name: "subiquitycore"
     - name: "cloud-init"
-    - name: "linux-image-arm64"
   extra-snaps:
     - name: snapd
     - name: lxd
