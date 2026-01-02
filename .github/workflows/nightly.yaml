@@ -17,23 +17,26 @@ jobs:
     runs-on: ubuntu-22.04
     name: Create matrix
     outputs:
-      build_matrix: ${{ steps.matrix.outputs.build_matrix }}
-      rootfs_matrix: ${{ steps.matrix.outputs.rootfs_matrix }}
+      build_matrix: ${{ steps.build.outputs.build_matrix }}
+      rootfs_matrix: ${{ steps.rootfs.outputs.rootfs_matrix }}
     steps:
-      # 恢复原版 Checkout code 步骤
+      # 原版Checkout步骤
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 脚本权限准备（保留精简后的优化）
       - name: Prepare script permissions
         run: |
           chmod +x ./build.sh ./scripts/*.sh
 
-      - name: Create build/rootfs matrix
-        id: matrix
+      # ========== 原版 Create build matrix Step（独立） ==========
+      - name: Create build matrix
+        id: build
         run: |
-          # Build matrix
           build_matrix=""
           for file in config/boards/*; do
+            COMPATIBLE_SUITES=()
+            COMPATIBLE_FLAVORS=()
             source "${file}" || { echo "Error loading ${file}"; exit 1; }
             for suite in "${COMPATIBLE_SUITES[@]}"; do
               for flavor in "${COMPATIBLE_FLAVORS[@]}"; do
@@ -41,18 +44,27 @@ jobs:
               done
             done
           done
-          build_matrix=${build_matrix:-"{\"include\":[]}"}
-          echo "build_matrix={\"include\":[${build_matrix::-1}]}" >> $GITHUB_OUTPUT
+          if [ -z "$build_matrix" ]; then
+            echo "build_matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+          else
+            echo "build_matrix={\"include\":[${build_matrix::-1}]}" >> $GITHUB_OUTPUT
+          fi
 
-          # Rootfs matrix
+      # ========== 原版 Create rootfs matrix Step（独立） ==========
+      - name: Create rootfs matrix
+        id: rootfs
+        run: |
           rootfs_matrix=""
           for suite in config/suites/*; do
             for flavor in config/flavors/*; do
               rootfs_matrix+="{\"suite\":\"$(basename "${suite%.sh}")\",\"flavor\":\"$(basename "${flavor%.sh}")\"},"
             done
           done
-          rootfs_matrix=${rootfs_matrix:-"{\"include\":[]}"}
-          echo "rootfs_matrix={\"include\":[${rootfs_matrix::-1}]}" >> $GITHUB_OUTPUT
+          if [ -z "$rootfs_matrix" ]; then
+            echo "rootfs_matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+          else
+            echo "rootfs_matrix={\"include\":[${rootfs_matrix::-1}]}" >> $GITHUB_OUTPUT
+          fi
 
   rootfs:
     runs-on: ubuntu-22.04
@@ -72,7 +84,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /var/lib/apt/lists/* || true
           df -h
 
-      # 恢复原版 Checkout code 步骤
+      # 原版Checkout步骤
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -203,7 +215,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /var/lib/apt/lists/* || true
           df -h
 
-      # 恢复原版 Checkout code 步骤
+      # 原版Checkout步骤
       - name: Checkout code
         uses: actions/checkout@v4
 
