@@ -20,14 +20,7 @@ jobs:
       build_matrix: ${{ steps.matrix.outputs.build_matrix }}
       rootfs_matrix: ${{ steps.matrix.outputs.rootfs_matrix }}
     steps:
-      - name: 🧹 清理磁盘空间
-        run: |
-          sudo rm -rf /home/runner/actions-runner/cached/_diag/* /home/runner/_diag/* /tmp/* /var/tmp/* || true
-          sudo docker system prune -a -f || true
-          sudo apt-get clean && sudo apt-get autoremove -y --purge
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost /var/lib/apt/lists/* || true
-          df -h
-
+      # 移除「清理磁盘空间」步骤
       - name: Checkout & Prepare
         run: |
           git clone $GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git .
@@ -150,7 +143,7 @@ jobs:
           enableCrossOsArchive: true
           save-always: false
 
-      # ========== 独立Step：打包并上传Rootfs到Release（仅本地构建时） ==========
+      # 独立Step：打包并上传Rootfs到Release（仅本地构建时）
       - name: Package & Upload Rootfs to Release
         if: steps.check_remote_rootfs.outputs.remote_exists == 'false'
         run: |
@@ -162,7 +155,7 @@ jobs:
           # 上传Release资产
           gh release upload $RELEASE_TAG $GITHUB_WORKSPACE/build/${{ steps.vars.outputs.rootfs_zip_name }} --repo $REPO_OWNER/$REPO_NAME --clobber
 
-      # ========== 独立Step：上传Rootfs Artifact ==========
+      # 独立Step：上传Rootfs Artifact
       - name: Upload Rootfs Artifact
         run: |
           gh artifact upload \
