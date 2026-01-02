@@ -22,7 +22,7 @@ for env in "${REQUIRED_ENVS[@]}"; do
 done
 
 # 2. 构造build目录下的文件路径（关键：路径拼接）
-TARGET_FILE="build/ubuntu-${REALASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
+TARGET_FILE="build/ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
 
 # 3. 判断build目录下的文件是否存在
 if [[ -f "$TARGET_FILE" ]]; then  # 加引号避免文件名含空格/特殊字符问题
