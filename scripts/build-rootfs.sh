@@ -4,7 +4,7 @@ set -eE
 # 1. 捕获EXIT信号：通过$?判断退出码，仅异常退出（非0）时打印错误
 #    $? 是Bash内置变量，代表“脚本退出前的最终退出码”，无需自定义变量
 trap '
-    local exit_code=$?  # 保存退出码（local仅在陷阱内生效，无全局变量）
+    exit_code=$?  # 保存退出码（local仅在陷阱内生效，无全局变量）
     if [ $exit_code -ne 0 ]; then
         echo "❌ 宿主机脚本异常退出"
     fi
