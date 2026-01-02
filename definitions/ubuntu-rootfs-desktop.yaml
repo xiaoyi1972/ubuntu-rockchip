@@ -46,6 +46,7 @@ customization:
     - name: "cloud-init"
   extra-snaps:
     - name: snapd
+    - name: bare
     - name: core24
     - name: gtk-common-themes
 # artifacts:
