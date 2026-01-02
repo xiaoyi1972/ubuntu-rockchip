@@ -21,23 +21,12 @@ for env in "${REQUIRED_ENVS[@]}"; do
     fi
 done
 
-ls ./
+# 2. 构造build目录下的文件路径（关键：路径拼接）
+TARGET_FILE="build/ubuntu-${REALASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
 
-echo "============分界线======="
-mkdir -p build && cd build
-ls ./
-
-# 调试：打印关键信息（加到 if 前面）
-echo "脚本执行目录：$(pwd)"
-echo "RELASE_VERSION 变量值：${RELASE_VERSION:-未定义}"  # 未定义则显示“未定义”
-echo "FLAVOR 变量值：${FLAVOR:-未定义}"
-echo "拼接后的文件名：ubuntu-${RELASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
-# 调试：直接列出当前目录下的 ubuntu*rootfs.tar.xz 文件（看是否匹配）
-ls -l ubuntu*rootfs.tar.xz 2>/dev/null || echo "当前目录无 ubuntu*rootfs.tar.xz 文件"
-
-# 原逻辑
-if [[ -f ubuntu-${RELASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz ]]; then
-    echo "found rootfs.tar.xz"
+# 3. 判断build目录下的文件是否存在
+if [[ -f "$TARGET_FILE" ]]; then  # 加引号避免文件名含空格/特殊字符问题
+    echo "found rootfs.tar.xz in build directory: $TARGET_FILE"
     exit 0
 fi
 
