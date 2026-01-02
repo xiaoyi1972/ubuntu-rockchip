@@ -1,6 +1,18 @@
 #!/bin/bash
 set -eE
-trap 'echo "❌ 宿主机脚本异常退出"; exit 1' EXIT INT TERM QUIT
+
+# 1. 捕获EXIT信号：通过$?判断退出码，仅异常退出（非0）时打印错误
+#    $? 是Bash内置变量，代表“脚本退出前的最终退出码”，无需自定义变量
+trap '
+    local exit_code=$?  # 保存退出码（local仅在陷阱内生效，无全局变量）
+    if [ $exit_code -ne 0 ]; then
+        echo "❌ 宿主机脚本异常退出"
+    fi
+    exit $exit_code  # 保留原退出码（exit 1则最终退出码1，exit 0则0）
+' EXIT
+
+# 2. 捕获强制终止信号（INT/TERM/QUIT）：强制设为异常退出（触发上面的EXIT陷阱）
+trap 'echo "❌ 宿主机脚本被强制终止"; exit 1' INT TERM QUIT
 
 # ===================== 基础配置（YAML文件名由FLAVOR自动拼接） =====================
 HOST_ROOTFS_ROOT=$(cd $(dirname $0)/.. && pwd -P)
