@@ -44,7 +44,6 @@ customization:
     - name: "oem-config"
     - name: "libgtk-3-0"
     - name: "cloud-init"
-    - name: "linux-image-arm64"
   extra-snaps:
     - name: snapd
     - name: core24
