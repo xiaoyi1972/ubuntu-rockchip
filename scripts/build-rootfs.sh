@@ -142,6 +142,7 @@ docker_run_prepare(){
     run_script(){
         #!/bin/bash
         # debootstrap wrapper: inject options from DEBOOTSTRAP_OPTS before passing args
+        LOG_PATH=/tmp/debootstrap.log
         REAL="/usr/sbin/debootstrap"
         # fallback to whatever is available in PATH if /usr/sbin/debootstrap missing
         if [ ! -x "$REAL" ]; then
@@ -149,9 +150,9 @@ docker_run_prepare(){
         fi
         EXTRA="${DEBOOTSTRAP_OPTS:-}"
         if [ -n "$EXTRA" ]; then
-            exec $REAL $EXTRA "$@"
+            exec $REAL $EXTRA "$@" > "${LOG_PATH}" 2>&1
         else
-            exec $REAL "$@"
+            exec $REAL "$@" > "${LOG_PATH}" 2>&1
         fi
     }
 
@@ -265,6 +266,7 @@ EOF
             --output-dir "${BUILD_DIR}/img" \
             classic "${YAML_CONFIG_FILE}"; then
           echo -e "\n❌ ubuntu-image execution failed"
+          cat /tmp/debootstrap.log
           [ -f "${BUILD_DIR}/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap log not found"
           [ -f "${BUILD_DIR}/img/build.log" ] && cat $_ || echo "ubuntu-image log not found"
           exit 1
