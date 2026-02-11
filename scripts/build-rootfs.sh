@@ -217,6 +217,7 @@ docker_run_prepare(){
         ) &
         MONITOR_PID=$!
 
+        export DEBOOTSTRAP_OPTS="--no-check-gpg"
         # Run ubuntu-image (auto-constructed YAML path)
         echo "🚀 Running ubuntu-image build (YAML: ${YAML_CONFIG_FILE})..."
         if ! ubuntu-image --debug \
