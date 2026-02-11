@@ -285,7 +285,7 @@ EOF
     TEMPLATE_SCRIPT=$(type build_file | extract_body)
     SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
     FINAL_SCRIPT="${TEMPLATE_SCRIPT//\$\{SUBSTITUTED_SCRIPT\}/$SUBSTITUTED_SCRIPT}"
-    printf '%s' "$FINAL_SCRIPT" > "${DOCKERFILE_DIR}/Dockerfile" 
+    printf '%s' "$FINAL_SCRIPT" > "${CONTAINER_SCRIPT}"
     )
 
     # Run container: only pass RELEASE_VERSION and FLAVOR
