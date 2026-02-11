@@ -263,7 +263,7 @@ EOF
 
         # Run ubuntu-image (auto-constructed YAML path)
         echo "🚀 Running ubuntu-image build (YAML: ${YAML_CONFIG_FILE})..."
-        if ! ubuntu-image --verbose \
+        if ! ubuntu-image --debug \
             --workdir "${BUILD_DIR}" \
             --output-dir "${BUILD_DIR}/img" \
             classic "${YAML_CONFIG_FILE}"; then
