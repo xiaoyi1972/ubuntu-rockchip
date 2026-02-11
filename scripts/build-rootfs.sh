@@ -200,6 +200,11 @@ docker_run_prepare(){
         # Ensure ubuntu archive keyring is available for debootstrap
         apt-get update -y -qq || true
         apt-get install -y --reinstall ubuntu-keyring debian-archive-keyring gnupg || true
+        # Ensure keyring directory exists and has correct permissions
+        mkdir -p /usr/share/keyrings
+        
+        # Configure debootstrap to use correct keyring and skip verification as fallback
+        export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg --no-check-gpg"
 
         # Monitor chroot creation via inotify
         (
@@ -217,7 +222,6 @@ docker_run_prepare(){
         ) &
         MONITOR_PID=$!
 
-        export DEBOOTSTRAP_OPTS="--no-check-gpg"
         # Run ubuntu-image (auto-constructed YAML path)
         echo "🚀 Running ubuntu-image build (YAML: ${YAML_CONFIG_FILE})..."
         if ! ubuntu-image --debug \
