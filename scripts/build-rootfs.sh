@@ -68,7 +68,7 @@ rm -rf "${BUILD_DIR}/"*.tar.xz
 rm -rf "${BUILD_DIR}/chroot" "${BUILD_DIR}/img"
 mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/img"
 
-# ===================== 第一步：Docker Build（移除bc依赖） =====================
+# ===================== 第一步：Docker Build（移除bc依赖，新增密钥修复） =====================
 echo -e "\n=== 第一步：Docker Build 构建镜像 ==="
 DOCKERFILE_DIR=$(mktemp -d)
 
@@ -104,6 +104,14 @@ apt-get install -y --no-install-recommends \
     xz-utils \
     curl \
     inotify-tools
+
+# ========== 关键修改1：修复Ubuntu归档GPG密钥 ==========
+# 重装密钥包 + 刷新debootstrap密钥环（容器内root执行，无需sudo）
+apt-get install --reinstall -y ubuntu-archive-keyring
+cp /usr/share/keyrings/ubuntu-archive-keyring.gpg /usr/share/debootstrap/keyrings/
+
+# ========== 关键修改2：手动导入缺失的871920D1991BC93C密钥（兜底） ==========
+apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 871920D1991BC93C || true
 
 tmp_dir=$(mktemp -d)
 cd "${tmp_dir}" || exit 1
