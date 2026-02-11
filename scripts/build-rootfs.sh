@@ -222,7 +222,6 @@ docker_run_prepare(){
 
         cat > /usr/local/bin/debootstrap <<EOF
 #!/bin/bash
-set -x
 # debootstrap wrapper: inject options from DEBOOTSTRAP_OPTS before passing args
 REAL="/usr/sbin/debootstrap"
 # fallback to whatever is available in PATH if /usr/sbin/debootstrap missing
@@ -237,7 +236,6 @@ else
     "$REAL" "$@" > "${LOG_PATH}" 2>&1
     rc=\$?
 fi
-set +x
 exit \$rc
 EOF
         chmod +x /usr/local/bin/debootstrap
