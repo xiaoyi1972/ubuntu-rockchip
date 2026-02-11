@@ -139,26 +139,7 @@ echo -e "\nStep 2: Docker Run - building Rootfs (disk-only)"
 CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 docker_run_prepare(){
     (
-    run_script(){
-        #!/bin/bash
-        # debootstrap wrapper: inject options from DEBOOTSTRAP_OPTS before passing args
-        set -x
-        LOG_PATH=/tmp/debootstrap.log
-        REAL="/usr/sbin/debootstrap"
-        # fallback to whatever is available in PATH if /usr/sbin/debootstrap missing
-        if [ ! -x "$REAL" ]; then
-            REAL="$(command -v debootstrap || true)"
-        fi
-        EXTRA="${DEBOOTSTRAP_OPTS:-}"
-        if [ -n "$EXTRA" ]; then
-            exec $REAL $EXTRA "$@" > "${LOG_PATH}" 2>&1
-        else
-            exec $REAL "$@" > "${LOG_PATH}" 2>&1
-        fi
-        set +x
-    }
-
-    build_file() {
+    run_script() {
         #!/bin/bash
         set -eE
 
@@ -221,10 +202,13 @@ docker_run_prepare(){
         apt-get install -y --reinstall ubuntu-keyring debian-archive-keyring gnupg || true
         # Ensure keyring directory exists and has correct permissions
         mkdir -p /usr/share/keyrings
+        # Ensure debootstrap log dir exists so wrapper can write to it
+        mkdir -p "${BUILD_DIR}/chroot/debootstrap"
         
         # Configure debootstrap to use correct keyring and skip verification as fallback
+        export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg"
 
-        # Create a wrapper to inject DEBOOTSTRAP_OPTS into calls to debootstrap.
+        # Create a wrapper to inject DEBOOTSTRAP_OPTS into calls to debootstrap and capture its logs.
         # This avoids modifying ubuntu-image source. The wrapper lives in /usr/local/bin
         # which is typically earlier in PATH so it will be used in preference to the
         # system debootstrap.
@@ -232,18 +216,34 @@ docker_run_prepare(){
             mkdir -p /usr/local/bin
         fi
 
-        cat > /usr/local/bin/debootstrap <<'EOF' 
-        #!/bin/bash
-        export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg"
-        ${SUBSTITUTED_SCRIPT} 
-EOF
-        echo "/usr/local/bin/debootstrap"
-        cat /usr/local/bin/debootstrap
-        chmod +x /usr/local/bin/debootstrap
+        # Path where debootstrap will write logs
+        LOG_PATH="${BUILD_DIR}/chroot/debootstrap/debootstrap.log"
+        mkdir -p "$(dirname \"${LOG_PATH}\")"
 
+        cat > /usr/local/bin/debootstrap <<EOF
+#!/bin/bash
+set -x
+# debootstrap wrapper: inject options from DEBOOTSTRAP_OPTS before passing args
+REAL="/usr/sbin/debootstrap"
+# fallback to whatever is available in PATH if /usr/sbin/debootstrap missing
+if [ ! -x "$REAL" ]; then
+    REAL="$(command -v debootstrap || true)"
+fi
+EXTRA="${DEBOOTSTRAP_OPTS:-}"
+if [ -n "$EXTRA" ]; then
+    "$REAL" $EXTRA "$@" > "${LOG_PATH}" 2>&1
+    rc=\$?
+else
+    "$REAL" "$@" > "${LOG_PATH}" 2>&1
+    rc=\$?
+fi
+set +x
+exit \$rc
+EOF
+        chmod +x /usr/local/bin/debootstrap
         # Ensure /usr/local/bin is earlier in PATH so the wrapper is used
         export PATH="/usr/local/bin:${PATH}"
-        echo "✅ Installed debootstrap wrapper at /usr/local/bin/debootstrap (DEBOOTSTRAP_OPTS will be honored)"
+        echo "✅ Installed debootstrap wrapper at /usr/local/bin/debootstrap (DEBOOTSTRAP_OPTS will be honored and debootstrap output saved to ${LOG_PATH})"
 
         # Monitor chroot creation via inotify
         (
@@ -263,14 +263,23 @@ EOF
 
         # Run ubuntu-image (auto-constructed YAML path)
         echo "🚀 Running ubuntu-image build (YAML: ${YAML_CONFIG_FILE})..."
-        if ! ubuntu-image --debug \
+        if ! ( ubuntu-image --debug \
             --workdir "${BUILD_DIR}" \
             --output-dir "${BUILD_DIR}/img" \
-            classic "${YAML_CONFIG_FILE}"; then
+            classic "${YAML_CONFIG_FILE}" 2>&1 | tee "${BUILD_DIR}/img/build.log" ); then
           echo -e "\n❌ ubuntu-image execution failed"
-          cat /tmp/debootstrap.log
-          [ -f "${BUILD_DIR}/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap log not found"
-          [ -f "${BUILD_DIR}/img/build.log" ] && cat $_ || echo "ubuntu-image log not found"
+          if [ -f "${BUILD_DIR}/chroot/debootstrap/debootstrap.log" ]; then
+              echo -e "\n--- debootstrap.log ---"
+              cat "${BUILD_DIR}/chroot/debootstrap/debootstrap.log"
+          else
+              echo "debootstrap log not found: ${BUILD_DIR}/chroot/debootstrap/debootstrap.log"
+          fi
+          if [ -f "${BUILD_DIR}/img/build.log" ]; then
+              echo -e "\n--- ubuntu-image build.log ---"
+              cat "${BUILD_DIR}/img/build.log"
+          else
+              echo "ubuntu-image log not found: ${BUILD_DIR}/img/build.log"
+          fi
           exit 1
         fi
 
@@ -291,9 +300,8 @@ EOF
         echo "🎉 Build successful! Artifact path: ${FINAL_TAR_PATH}"
     }
 
-    TEMPLATE_SCRIPT=$(type build_file | extract_body)
     SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
-    FINAL_SCRIPT="${TEMPLATE_SCRIPT//\$\{SUBSTITUTED_SCRIPT\}/$SUBSTITUTED_SCRIPT}"
+    FINAL_SCRIPT="${SUBSTITUTED_SCRIPT}"
     printf '%s' "$FINAL_SCRIPT" > "${CONTAINER_SCRIPT}"
     )
 
