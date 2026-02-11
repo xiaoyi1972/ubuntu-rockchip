@@ -142,6 +142,7 @@ docker_run_prepare(){
     run_script(){
         #!/bin/bash
         # debootstrap wrapper: inject options from DEBOOTSTRAP_OPTS before passing args
+        set -x
         LOG_PATH=/tmp/debootstrap.log
         REAL="/usr/sbin/debootstrap"
         # fallback to whatever is available in PATH if /usr/sbin/debootstrap missing
@@ -154,6 +155,7 @@ docker_run_prepare(){
         else
             exec $REAL "$@" > "${LOG_PATH}" 2>&1
         fi
+        set +x
     }
 
     build_file() {
