@@ -229,7 +229,7 @@ docker_run_prepare(){
             mkdir -p /usr/local/bin
         fi
 
-        cat > /usr/local/bin/debootstrap <<'EOF' 
+        cat > /usr/local/bin/debootstrap <<EOF 
         #!/bin/bash
         export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg"
         ${SUBSTITUTED_SCRIPT} 
