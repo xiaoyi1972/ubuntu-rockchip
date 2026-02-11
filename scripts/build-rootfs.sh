@@ -15,7 +15,7 @@ trap '
 trap 'echo "❌ Host script was forcibly terminated"; exit 1' INT TERM QUIT
 
 extract_body() {
-    perl -0777 -ne 'while (/\b(?:function\s+)?([A-Za-z_]\w*)\s*\(\s*\)\s*(\{(?:[^{}]++|(?2))*\})/g) { my $c = substr($2,1,-1); $c =~ s/^[ \t\r\n]+//; $c =~ s/[ \t\r\n]+$//; # remove semicolons before newlines (do not insert extra newlines)
+    perl -0777 -ne 'while (/\b(?:function\s+)?([A-Za-z_]\w*)\s*\(\s*\)\s*(\{(?:[^{}]++|(?2))*\})/g) { my $c = substr($2,1,-1); $c =~ s/^[ \t\r\n]+//; $c =~ s/[ \t\r\n]+$//; # remove semicolons before [...]
 $c =~ s/;[ \t]*(?=\n)//g; $c =~ s/;[ \t]*\z//; # collapse multiple blank lines
 $c =~ s/\n[ \t]*\n+/\n/g; print "$c\n" }' "$@"
 }
@@ -205,6 +205,34 @@ docker_run_prepare(){
         
         # Configure debootstrap to use correct keyring and skip verification as fallback
         export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg --no-check-gpg"
+
+        # Create a wrapper to inject DEBOOTSTRAP_OPTS into calls to debootstrap.
+        # This avoids modifying ubuntu-image source. The wrapper lives in /usr/local/bin
+        # which is typically earlier in PATH so it will be used in preference to the
+        # system debootstrap.
+        if [ ! -d /usr/local/bin ]; then
+            mkdir -p /usr/local/bin
+        fi
+
+        cat > /usr/local/bin/debootstrap <<'EOF'
+#!/bin/bash
+# debootstrap wrapper: inject options from DEBOOTSTRAP_OPTS before passing args
+REAL="/usr/sbin/debootstrap"
+# fallback to whatever is available in PATH if /usr/sbin/debootstrap missing
+if [ ! -x "$REAL" ]; then
+    REAL="$(command -v debootstrap || true)"
+fi
+EXTRA="${DEBOOTSTRAP_OPTS:-}"
+if [ -n "$EXTRA" ]; then
+    exec $REAL $EXTRA "$@"
+else
+    exec $REAL "$@"
+fi
+EOF
+        chmod +x /usr/local/bin/debootstrap
+        # Ensure /usr/local/bin is earlier in PATH so the wrapper is used
+        export PATH="/usr/local/bin:${PATH}"
+        echo "✅ Installed debootstrap wrapper at /usr/local/bin/debootstrap (DEBOOTSTRAP_OPTS will be honored)"
 
         # Monitor chroot creation via inotify
         (
