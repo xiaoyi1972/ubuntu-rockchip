@@ -1,274 +1,288 @@
 #!/bin/bash
 set -eE
 
-# 1. 捕获EXIT信号：通过$?判断退出码，仅异常退出（非0）时打印错误
-#    $? 是Bash内置变量，代表“脚本退出前的最终退出码”，无需自定义变量
+# Capture EXIT signal: print if exit code != 0
+# $? is a Bash builtin; no extra var needed
 trap '
-    exit_code=$?  # 保存退出码（local仅在陷阱内生效，无全局变量）
+    exit_code=$?  # save exit code (local to trap)
     if [ $exit_code -ne 0 ]; then
-        echo "❌ 宿主机脚本异常退出"
+        echo "❌ Host script exited abnormally"
     fi
-    exit $exit_code  # 保留原退出码（exit 1则最终退出码1，exit 0则0）
+    exit $exit_code  # exit with original code
 ' EXIT
 
-# 2. 捕获强制终止信号（INT/TERM/QUIT）：强制设为异常退出（触发上面的EXIT陷阱）
-trap 'echo "❌ 宿主机脚本被强制终止"; exit 1' INT TERM QUIT
+# Capture INT/TERM/QUIT and force exit
+trap 'echo "❌ Host script was forcibly terminated"; exit 1' INT TERM QUIT
 
-# ===================== 基础配置（YAML文件名由FLAVOR自动拼接） =====================
+extract_body() {
+    perl -0777 -ne 'while (/\b(?:function\s+)?([A-Za-z_]\w*)\s*\(\s*\)\s*(\{(?:[^{}]++|(?2))*\})/g) { my $c = substr($2,1,-1); $c =~ s/^[ \t\r\n]+//; $c =~ s/[ \t\r\n]+$//; # remove semicolons before newlines (do not insert extra newlines)
+$c =~ s/;[ \t]*(?=\n)//g; $c =~ s/;[ \t]*\z//; # collapse multiple blank lines
+$c =~ s/\n[ \t]*\n+/\n/g; print "$c\n" }' "$@"
+}
+
+# Basic configuration (YAML filename from FLAVOR)
 HOST_ROOTFS_ROOT=$(cd $(dirname $0)/.. && pwd -P)
 DOCKER_IMAGE="ubuntu-image-builder:plucky"
-BUILD_DIR="${HOST_ROOTFS_ROOT}/build"  # 磁盘构建/产物目录
+BUILD_DIR="${HOST_ROOTFS_ROOT}/build"  # Disk build/output directory
 
-# 固定目录（definitions目录路径统一）
-DEFINITIONS_DIR_HOST="${HOST_ROOTFS_ROOT}/definitions"       # 宿主机definitions目录
-DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"        # 容器内definitions目录
+# Definitions directories
+DEFINITIONS_DIR_HOST="${HOST_ROOTFS_ROOT}/definitions"       # Host definitions directory
+DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"        # Container definitions directory
 
-# 检查父脚本导出的核心环境变量（仅需RELEASE_VERSION和FLAVOR）
+# Require RELEASE_VERSION and FLAVOR
 REQUIRED_ENVS=("RELEASE_VERSION" "FLAVOR")
 for env in "${REQUIRED_ENVS[@]}"; do
     if [ -z "${!env}" ]; then
-        echo "ERROR: ${env}环境变量未定义！请从父脚本导出" >&2
-        echo "示例：export RELEASE_VERSION=25.04; export FLAVOR=server" >&2
+        echo "ERROR: ${env} environment variable not defined! Please export it from the parent script" >&2
+        echo "Example: export RELEASE_VERSION=25.04; export FLAVOR=server" >&2
         exit 1
     fi
 done
 
-# 2. 构造build目录下的文件路径（关键：路径拼接）
+# Construct target file path
 TARGET_FILE="build/ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
 
-# 3. 判断build目录下的文件是否存在
-if [[ -f "$TARGET_FILE" ]]; then  # 加引号避免文件名含空格/特殊字符问题
+# Check whether the file exists in the build directory
+if [[ -f "$TARGET_FILE" ]]; then  # quote filenames to handle spaces
     echo "found rootfs.tar.xz in build directory: $TARGET_FILE"
     exit 0
 fi
 
-# 自动拼接关键路径（核心：YAML文件名=ubuntu-rootfs-${FLAVOR}.yaml）
+# Auto-construct key paths
 FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
-TWEAKS_FILE="${DEFINITIONS_DIR_HOST}/tweaks.sh"                     # 宿主机tweaks路径
-YAML_CONFIG_FILENAME="ubuntu-rootfs-${FLAVOR}.yaml"                  # 自动拼接YAML文件名
-YAML_CONFIG_FILE_HOST="${DEFINITIONS_DIR_HOST}/${YAML_CONFIG_FILENAME}"  # 宿主机YAML完整路径
-YAML_CONFIG_FILE_CONTAINER="${DEFINITIONS_DIR_CONTAINER}/${YAML_CONFIG_FILENAME}"  # 容器内YAML完整路径
+TWEAKS_FILE="${DEFINITIONS_DIR_HOST}/tweaks.sh"                     # Host tweaks path
+YAML_CONFIG_FILENAME="ubuntu-rootfs-${FLAVOR}.yaml"                  # YAML filename
+YAML_CONFIG_FILE_HOST="${DEFINITIONS_DIR_HOST}/${YAML_CONFIG_FILENAME}"  # Host YAML full path
+YAML_CONFIG_FILE_CONTAINER="${DEFINITIONS_DIR_CONTAINER}/${YAML_CONFIG_FILENAME}"  # Container YAML full path
 
-# ===================== 前置检查（确保文件存在） =====================
-# 检查tweaks.sh
+# Pre-checks (ensure files exist)
+# Check tweaks.sh
 if [ ! -f "${TWEAKS_FILE}" ]; then
-    echo "ERROR: tweaks.sh文件不存在 → ${TWEAKS_FILE}" >&2
+    echo "ERROR: tweaks.sh not found → ${TWEAKS_FILE}" >&2
     exit 1
 fi
 
-# 检查自动拼接后的YAML配置文件
+# Check YAML file
 if [ ! -f "${YAML_CONFIG_FILE_HOST}" ]; then
-    echo "ERROR: YAML配置文件不存在 → ${YAML_CONFIG_FILE_HOST}" >&2
-    echo "请确认FLAVOR=${FLAVOR}对应的YAML文件（${YAML_CONFIG_FILENAME}）存在于definitions目录" >&2
+    echo "ERROR: YAML configuration file not found → ${YAML_CONFIG_FILE_HOST}" >&2
+    echo "Please ensure the YAML file for FLAVOR=${FLAVOR} (${YAML_CONFIG_FILENAME}) exists in the definitions directory" >&2
     exit 1
 fi
 
-# 清理旧产物和临时构建文件
+# Clean old artifacts
 rm -rf "${BUILD_DIR}/"*.tar.xz
 rm -rf "${BUILD_DIR}/chroot" "${BUILD_DIR}/img"
 mkdir -p "${BUILD_DIR}" "${BUILD_DIR}/img"
 
-# ===================== 第一步：Docker Build（移除bc依赖） =====================
-echo -e "\n=== 第一步：Docker Build 构建镜像 ==="
+# Step 1: Docker Build
+echo -e "\nStep 1: Docker Build - building image"
 DOCKERFILE_DIR=$(mktemp -d)
 
-cat > "${DOCKERFILE_DIR}/Dockerfile" << 'DOCKERFILE_EOF'
-FROM ubuntu:25.04
-ENV DEBIAN_FRONTEND=noninteractive
+docker_build_prepare(){
+    (
+    run_script() {
+        set -e
+        # Optional: change apt source mirrors:
+        # sed -i.bak 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
+        apt-get update -y -qq
+        apt-get install -y --no-install-recommends \
+            debootstrap schroot qemu-user-static binfmt-support util-linux mount \
+            procps apt-transport-https ca-certificates git build-essential devscripts \
+            debhelper rsync xz-utils curl inotify-tools \
+            ubuntu-keyring gnupg
+        
+        tmp_dir=$(mktemp -d)
+        cd "${tmp_dir}" || exit 1
+        git clone --depth 1 https://github.com/canonical/ubuntu-image.git
+        cd ubuntu-image || exit 1
+        touch ubuntu-image.rst
+        apt-get build-dep . -y
+        dpkg-buildpackage -us -uc -j$(nproc)
+        apt-get install ../*.deb --assume-yes --allow-downgrades
+        dpkg -i ../*.deb
+        apt-mark hold ubuntu-image
 
-RUN <<SCRIPT
-set -e
-# 可选换源：
-# sed -i.bak 's@http://archive.ubuntu.com/ubuntu/@http://mirrors.aliyun.com/ubuntu/@g' /etc/apt/sources.list
-apt-get update -y -qq
-SCRIPT
+        cd /
+        rm -rf "${tmp_dir}"
+        command -v ubuntu-image || exit 1
+    }
 
-# 安装通用依赖（移除bc）
-RUN <<SCRIPT
-set -e
-apt-get install -y --no-install-recommends \
-    debootstrap \
-    schroot \
-    qemu-user-static \
-    binfmt-support \
-    util-linux \
-    mount \
-    procps \
-    apt-transport-https \
-    ca-certificates \
-    git \
-    build-essential \
-    devscripts \
-    debhelper \
-    rsync \
-    xz-utils \
-    curl \
-    inotify-tools
+    docker_build_file() {
+        FROM ubuntu:25.04
+        ENV DEBIAN_FRONTEND=noninteractive
+        RUN << EOF 
+        ${SUBSTITUTED_SCRIPT} 
+EOF
+        WORKDIR /rootfs-build
+    }
 
-tmp_dir=$(mktemp -d)
-cd "${tmp_dir}" || exit 1
-git clone --depth 1 https://github.com/canonical/ubuntu-image.git
-cd ubuntu-image || exit 1
-touch ubuntu-image.rst
-apt-get build-dep . -y
-dpkg-buildpackage -us -uc -j$(nproc)
-apt-get install ../*.deb --assume-yes --allow-downgrades
-dpkg -i ../*.deb
-apt-mark hold ubuntu-image
-
-cd /
-rm -rf "${tmp_dir}"
-command -v ubuntu-image || exit 1
-SCRIPT
-
-WORKDIR /rootfs-build
-DOCKERFILE_EOF
-
-# 构建镜像
-docker build \
-    --no-cache \
-    --pull \
-    --progress=plain \
-    -t "${DOCKER_IMAGE}" \
-    "${DOCKERFILE_DIR}"
-rm -rf "${DOCKERFILE_DIR}"
-
-# ===================== 第二步：Docker Run（容器内自动拼接YAML路径） =====================
-echo -e "\n=== 第二步：Docker Run 构建Rootfs（纯磁盘目录） ==="
-CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
-
-cat > "${CONTAINER_SCRIPT}" << 'SCRIPT_EOF'
-#!/bin/bash
-set -eE
-
-# 配置参数（容器内固定目录）
-BUILD_DIR="/rootfs-build/build"
-DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"
-
-# 检查父脚本传递的环境变量（仅RELEASE_VERSION和FLAVOR）
-REQUIRED_ENVS=("RELEASE_VERSION" "FLAVOR")
-for env in "${REQUIRED_ENVS[@]}"; do
-    if [ -z "${!env}" ]; then
-        echo "ERROR: 容器内${env}环境变量未传递！" >&2
-        exit 1
-    fi
-done
-
-# 容器内自动拼接路径（核心：YAML文件名=ubuntu-rootfs-${FLAVOR}.yaml）
-FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
-TWEAKS_FILE="${DEFINITIONS_DIR_CONTAINER}/tweaks.sh"
-YAML_CONFIG_FILENAME="ubuntu-rootfs-${FLAVOR}.yaml"                  # 自动拼接YAML文件名
-YAML_CONFIG_FILE="${DEFINITIONS_DIR_CONTAINER}/${YAML_CONFIG_FILENAME}"  # 容器内YAML完整路径
-
-# ===================== 清理函数 =====================
-cleanup() {
-    echo -e "\n🔍 触发清理逻辑..."
-    pkill inotifywait || true
-    echo "✅ 清理完成（产物保留在${BUILD_DIR}）"
+    TEMPLATE_SCRIPT=$(type docker_build_file | extract_body)
+    SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
+    FINAL_SCRIPT="${TEMPLATE_SCRIPT//\$\{SUBSTITUTED_SCRIPT\}/$SUBSTITUTED_SCRIPT}"
+    printf '%s' "$FINAL_SCRIPT" > "${DOCKERFILE_DIR}/Dockerfile" 
+    )
+    # Build image
+    docker build \
+        --no-cache \
+        --pull \
+        --progress=plain \
+        -t "${DOCKER_IMAGE}" \
+        "${DOCKERFILE_DIR}"
+    rm -rf "${DOCKERFILE_DIR}"
 }
-trap 'cleanup' EXIT INT TERM QUIT
 
-# ===================== 修复tweaks.sh权限 =====================
-if [ -f "$TWEAKS_FILE" ]; then
-    chmod +x "$TWEAKS_FILE"
-    chown root:root "$TWEAKS_FILE"
-    echo "✅ 已修复tweaks.sh权限 → ${TWEAKS_FILE}"
-else
-    echo "ERROR: 容器内tweaks.sh不存在 → ${TWEAKS_FILE}" >&2
-    exit 1
-fi
+docker_build_prepare
 
-# ===================== 检查容器内YAML文件 =====================
-if [ ! -f "${YAML_CONFIG_FILE}" ]; then
-    echo "ERROR: 容器内YAML配置文件不存在 → ${YAML_CONFIG_FILE}" >&2
-    echo "请确认宿主机definitions目录包含${YAML_CONFIG_FILENAME}" >&2
-    exit 1
-fi
+# Step 2: Docker Run
+echo -e "\nStep 2: Docker Run - building Rootfs (disk-only)"
 
-# ===================== 配置binfmt =====================
-mkdir -p /proc/sys/fs/binfmt_misc
-mount -t binfmt_misc none /proc/sys/fs/binfmt_misc || true
-update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-aarch64-static \
-    --magic '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00' \
-    --mask '\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff' \
-    --credentials yes --fix-binary yes
-update-binfmts --enable qemu-aarch64 || true
-/usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static不存在"; exit 1; }
+CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
+docker_run_prepare(){
+    (
+    run_script() {
+        #!/bin/bash
+        set -eE
 
-# ===================== inotify监控chroot创建 =====================
-(
-    inotifywait -m -r -e CREATE,ISDIR --format '%w%f' "${BUILD_DIR}" | while read dir; do
-        if [[ "$dir" == "${BUILD_DIR}/chroot" ]]; then
-            echo "✅ 检测到chroot创建，等待子目录初始化..."
-            until [ -d "${BUILD_DIR}/chroot/usr/bin" ]; do sleep 0.1; done
-            cp /usr/bin/qemu-aarch64-static "${BUILD_DIR}/chroot/usr/bin/"
-            chmod +x "${BUILD_DIR}/chroot/usr/bin/qemu-aarch64-static"
-            echo "✅ qemu已复制到chroot"
-            pkill inotifywait
-            exit 0
+        # Container paths
+        BUILD_DIR="/rootfs-build/build"
+        DEFINITIONS_DIR_CONTAINER="/rootfs-build/definitions"
+
+        # Check envs passed to container
+        REQUIRED_ENVS=("RELEASE_VERSION" "FLAVOR")
+        for env in "${REQUIRED_ENVS[@]}"; do
+            if [ -z "${!env}" ]; then
+                echo "ERROR: ${env} environment variable not passed into container!" >&2
+                exit 1
+            fi
+        done
+
+        # Auto-construct paths
+        FINAL_TAR_PATH="${BUILD_DIR}/ubuntu-${RELEASE_VERSION}-preinstalled-${FLAVOR}-arm64.rootfs.tar.xz"
+        TWEAKS_FILE="${DEFINITIONS_DIR_CONTAINER}/tweaks.sh"
+        YAML_CONFIG_FILENAME="ubuntu-rootfs-${FLAVOR}.yaml"                  # YAML filename
+        YAML_CONFIG_FILE="${DEFINITIONS_DIR_CONTAINER}/${YAML_CONFIG_FILENAME}"  # Container YAML full path
+
+        # Cleanup
+        cleanup() {
+            echo -e "\n🔍 Triggering cleanup..."
+            pkill inotifywait || true
+            echo "✅ Cleanup done (artifacts preserved in ${BUILD_DIR})"
+        }
+        trap 'cleanup' EXIT INT TERM QUIT
+
+        # Fix tweaks.sh permissions
+        if [ -f "$TWEAKS_FILE" ]; then
+            chmod +x "$TWEAKS_FILE"
+            chown root:root "$TWEAKS_FILE"
+            echo "✅ Fixed tweaks.sh permissions → ${TWEAKS_FILE}"
+        else
+            echo "ERROR: tweaks.sh not found inside container → ${TWEAKS_FILE}" >&2
+            exit 1
         fi
-    done
-) &
-MONITOR_PID=$!
 
-# ===================== 执行ubuntu-image（自动拼接的YAML路径） =====================
-echo "🚀 执行ubuntu-image构建（YAML配置：${YAML_CONFIG_FILE}）..."
-if ! ubuntu-image --debug \
-    --workdir "${BUILD_DIR}" \
-    --output-dir "${BUILD_DIR}/img" \
-    classic "${YAML_CONFIG_FILE}"; then
-  echo -e "\n❌ ubuntu-image执行失败"
-  [ -f "${BUILD_DIR}/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap日志不存在"
-  [ -f "${BUILD_DIR}/img/build.log" ] && cat $_ || echo "ubuntu-image日志不存在"
-  exit 1
-fi
+        # Check YAML file
+        if [ ! -f "${YAML_CONFIG_FILE}" ]; then
+            echo "ERROR: YAML configuration file not found inside container → ${YAML_CONFIG_FILE}" >&2
+            echo "Please ensure host definitions directory contains ${YAML_CONFIG_FILENAME}" >&2
+            exit 1
+        fi
 
-# ===================== 打包产物 =====================
-if ps -p $MONITOR_PID > /dev/null; then
-    wait $MONITOR_PID || true
-fi
+        # Configure binfmt
+        mkdir -p /proc/sys/fs/binfmt_misc
+        mount -t binfmt_misc none /proc/sys/fs/binfmt_misc || true
+        update-binfmts --package qemu-user-static --install qemu-aarch64 /usr/bin/qemu-aarch64-static \
+            --magic '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00' \
+            --mask '\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff' \
+            --credentials yes --fix-binary yes
+        update-binfmts --enable qemu-aarch64 || true
+        /usr/bin/qemu-aarch64-static --version || { echo "qemu-aarch64-static not found"; exit 1; }
 
-echo "📦 打包rootfs（版本：${RELEASE_VERSION}，Flavor：${FLAVOR}）..."
-tar -cJf ${FINAL_TAR_PATH} \
-    -p -C "${BUILD_DIR}/chroot" . \
-    --sort=name \
-    --xattrs
+        # Ensure ubuntu archive keyring is available for debootstrap
+        apt-get update -y -qq || true
+        apt-get install -y --no-install-recommends ubuntu-keyring gnupg || true
 
-# ===================== 验证产物 =====================
-echo -e "\n🔍 产物验证："
-ls -lh ${FINAL_TAR_PATH}
-echo "🎉 构建成功！产物路径：${FINAL_TAR_PATH}"
-SCRIPT_EOF
+        # Monitor chroot creation via inotify
+        (
+            inotifywait -m -r -e CREATE,ISDIR --format '%w%f' "${BUILD_DIR}" | while read dir; do
+                if [[ "$dir" == "${BUILD_DIR}/chroot" ]]; then
+                    echo "✅ Detected chroot creation, waiting for subdirectories to initialize..."
+                    until [ -d "${BUILD_DIR}/chroot/usr/bin" ]; do sleep 0.1; done
+                    cp /usr/bin/qemu-aarch64-static "${BUILD_DIR}/chroot/usr/bin/"
+                    chmod +x "${BUILD_DIR}/chroot/usr/bin/qemu-aarch64-static"
+                    echo "✅ qemu copied to chroot"
+                    pkill inotifywait
+                    exit 0
+                fi
+            done
+        ) &
+        MONITOR_PID=$!
 
-# 执行容器：仅传递RELEASE_VERSION和FLAVOR
-docker run --rm -i \
-    --privileged \
-    --cap-add=ALL \
-    -e RELEASE_VERSION="${RELEASE_VERSION}" \
-    -e FLAVOR="${FLAVOR}" \
-    -v "${HOST_ROOTFS_ROOT}:/rootfs-build" \
-    -v "${BUILD_DIR}:/rootfs-build/build" \
-    -v "${CONTAINER_SCRIPT}:/tmp/run-script.sh:ro" \
-    "${DOCKER_IMAGE}" \
-    /bin/bash /tmp/run-script.sh
+        # Run ubuntu-image (auto-constructed YAML path)
+        echo "🚀 Running ubuntu-image build (YAML: ${YAML_CONFIG_FILE})..."
+        if ! ubuntu-image --debug \
+            --workdir "${BUILD_DIR}" \
+            --output-dir "${BUILD_DIR}/img" \
+            classic "${YAML_CONFIG_FILE}"; then
+          echo -e "\n❌ ubuntu-image execution failed"
+          [ -f "${BUILD_DIR}/chroot/debootstrap/debootstrap.log" ] && cat $_ || echo "debootstrap log not found"
+          [ -f "${BUILD_DIR}/img/build.log" ] && cat $_ || echo "ubuntu-image log not found"
+          exit 1
+        fi
 
-# 清理容器脚本
-rm -f "${CONTAINER_SCRIPT}"
+        # Package artifact
+        if ps -p $MONITOR_PID > /dev/null; then
+            wait $MONITOR_PID || true
+        fi
 
-# ===================== 宿主机验证 =====================
+        echo "📦 Packaging rootfs (Release: ${RELEASE_VERSION}, Flavor: ${FLAVOR})..."
+        tar -cJf ${FINAL_TAR_PATH} \
+            -p -C "${BUILD_DIR}/chroot" . \
+            --sort=name \
+            --xattrs
+
+        # Verify artifact
+        echo -e "\n🔍 Verify artifact:"
+        ls -lh ${FINAL_TAR_PATH}
+        echo "🎉 Build successful! Artifact path: ${FINAL_TAR_PATH}"
+    }
+
+    SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
+    FINAL_SCRIPT="${SUBSTITUTED_SCRIPT}"
+    printf '%s' "$FINAL_SCRIPT" > "${CONTAINER_SCRIPT}"
+    )
+
+    # Run container: only pass RELEASE_VERSION and FLAVOR
+    docker run --rm -i \
+        --privileged \
+        --cap-add=ALL \
+        -e RELEASE_VERSION="${RELEASE_VERSION}" \
+        -e FLAVOR="${FLAVOR}" \
+        -v "${HOST_ROOTFS_ROOT}:/rootfs-build" \
+        -v "${BUILD_DIR}:/rootfs-build/build" \
+        -v "${CONTAINER_SCRIPT}:/tmp/run-script.sh:ro" \
+        "${DOCKER_IMAGE}" \
+        /bin/bash /tmp/run-script.sh
+
+    # Clean up container script
+    rm -f "${CONTAINER_SCRIPT}"
+}
+
+docker_run_prepare
+
+# Host verification
 set +x
 if [ -f "${FINAL_TAR_PATH}" ]; then
-    echo -e "\n========================================"
-    echo "🎉 整体构建成功！"
-    echo "📁 产物路径：${FINAL_TAR_PATH}"
-    echo "📏 产物大小：$(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
-    echo "✅ 版本：${RELEASE_VERSION} | Flavor：${FLAVOR} | YAML：${YAML_CONFIG_FILENAME}"
-    echo "========================================"
+    echo -e "\n----------------------------------------"
+    echo "🎉 Overall build succeeded!"
+    echo "📁 Artifact path: ${FINAL_TAR_PATH}"
+    echo "📏 Artifact size: $(du -sh "${FINAL_TAR_PATH}" | awk '{print $1}')"
+    echo "✅ Release: ${RELEASE_VERSION} | Flavor: ${FLAVOR} | YAML: ${YAML_CONFIG_FILENAME}"
+    echo "----------------------------------------"
 else
-    echo -e "\n❌ 构建失败：未生成产物" >&2
+    echo -e "\n❌ Build failed: artifact not produced" >&2
     ls -la "${BUILD_DIR}/"
     exit 1
 fi
 
-# 解除trap
+# Clear trap handlers
 trap - EXIT INT TERM QUIT
