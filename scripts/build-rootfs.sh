@@ -231,6 +231,7 @@ docker_run_prepare(){
         fi
 
         cat > /usr/local/bin/debootstrap <<'EOF' 
+        #!/bin/bash
         ${SUBSTITUTED_SCRIPT} 
 EOF
         chmod +x /usr/local/bin/debootstrap
