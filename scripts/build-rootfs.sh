@@ -234,8 +234,12 @@ docker_run_prepare(){
         export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg"
         ${SUBSTITUTED_SCRIPT} 
 EOF
+        echo "/usr/local/bin/debootstrap"
         cat /usr/local/bin/debootstrap
         chmod +x /usr/local/bin/debootstrap
+
+        bash -x /usr/local/bin/debootstrap --arch arm64 --variant=minbase --components=main,restricted,universe,multiverse plucky /rootfs-build/build/chroot http://ports.ubuntu.com/ubuntu-ports
+        
         # Ensure /usr/local/bin is earlier in PATH so the wrapper is used
         export PATH="/usr/local/bin:${PATH}"
         echo "✅ Installed debootstrap wrapper at /usr/local/bin/debootstrap (DEBOOTSTRAP_OPTS will be honored)"
