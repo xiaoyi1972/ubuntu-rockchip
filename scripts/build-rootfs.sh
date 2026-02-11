@@ -15,7 +15,7 @@ trap '
 trap 'echo "❌ Host script was forcibly terminated"; exit 1' INT TERM QUIT
 
 extract_body() {
-    perl -0777 -ne 'while (/\b(?:function\s+)?([A-Za-z_]\w*)\s*\(\s*\)\s*(\{(?:[^{}]++|(?2))*\})/g) { my $c = substr($2,1,-1); $c =~ s/^[ \t\r\n]+//; $c =~ s/[ \t\r\n]+$//; # remove semicolons before [...]
+    perl -0777 -ne 'while (/\b(?:function\s+)?([A-Za-z_]\w*)\s*\(\s*\)\s*(\{(?:[^{}]++|(?2))*\})/g) { my $c = substr($2,1,-1); $c =~ s/^[ \t\r\n]+//; $c =~ s/[ \t\r\n]+$//; # remove semicolons before newlines (do not insert extra newlines)
 $c =~ s/;[ \t]*(?=\n)//g; $c =~ s/;[ \t]*\z//; # collapse multiple blank lines
 $c =~ s/\n[ \t]*\n+/\n/g; print "$c\n" }' "$@"
 }
@@ -107,7 +107,7 @@ docker_build_prepare(){
         command -v ubuntu-image || exit 1
     }
 
-    docker_build_file() {
+    build_file() {
         FROM ubuntu:25.04
         ENV DEBIAN_FRONTEND=noninteractive
         RUN << EOF 
@@ -116,7 +116,7 @@ EOF
         WORKDIR /rootfs-build
     }
 
-    TEMPLATE_SCRIPT=$(type docker_build_file | extract_body)
+    TEMPLATE_SCRIPT=$(type build_file | extract_body)
     SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
     FINAL_SCRIPT="${TEMPLATE_SCRIPT//\$\{SUBSTITUTED_SCRIPT\}/$SUBSTITUTED_SCRIPT}"
     printf '%s' "$FINAL_SCRIPT" > "${DOCKERFILE_DIR}/Dockerfile" 
@@ -139,7 +139,23 @@ echo -e "\nStep 2: Docker Run - building Rootfs (disk-only)"
 CONTAINER_SCRIPT=$(mktemp -p /tmp -t build-rootfs.XXXXXX.sh)
 docker_run_prepare(){
     (
-    run_script() {
+    run_script(){
+        #!/bin/bash
+        # debootstrap wrapper: inject options from DEBOOTSTRAP_OPTS before passing args
+        REAL="/usr/sbin/debootstrap"
+        # fallback to whatever is available in PATH if /usr/sbin/debootstrap missing
+        if [ ! -x "$REAL" ]; then
+            REAL="$(command -v debootstrap || true)"
+        fi
+        EXTRA="${DEBOOTSTRAP_OPTS:-}"
+        if [ -n "$EXTRA" ]; then
+            exec $REAL $EXTRA "$@"
+        else
+            exec $REAL "$@"
+        fi
+    }
+
+    build_file() {
         #!/bin/bash
         set -eE
 
@@ -204,7 +220,7 @@ docker_run_prepare(){
         mkdir -p /usr/share/keyrings
         
         # Configure debootstrap to use correct keyring and skip verification as fallback
-        export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg" #--no-check-gpg"
+        export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg"
 
         # Create a wrapper to inject DEBOOTSTRAP_OPTS into calls to debootstrap.
         # This avoids modifying ubuntu-image source. The wrapper lives in /usr/local/bin
@@ -214,20 +230,7 @@ docker_run_prepare(){
             mkdir -p /usr/local/bin
         fi
 
-        cat > /usr/local/bin/debootstrap <<'EOF'
-#!/bin/bash
-# debootstrap wrapper: inject options from DEBOOTSTRAP_OPTS before passing args
-REAL="/usr/sbin/debootstrap"
-# fallback to whatever is available in PATH if /usr/sbin/debootstrap missing
-if [ ! -x "$REAL" ]; then
-    REAL="$(command -v debootstrap || true)"
-fi
-EXTRA="${DEBOOTSTRAP_OPTS:-}"
-if [ -n "$EXTRA" ]; then
-    exec $REAL $EXTRA "$@"
-else
-    exec $REAL "$@"
-fi
+        cat > /usr/local/bin/debootstrap <<'EOF' ${SUBSTITUTED_SCRIPT} 
 EOF
         chmod +x /usr/local/bin/debootstrap
         # Ensure /usr/local/bin is earlier in PATH so the wrapper is used
@@ -279,9 +282,10 @@ EOF
         echo "🎉 Build successful! Artifact path: ${FINAL_TAR_PATH}"
     }
 
+    TEMPLATE_SCRIPT=$(type build_file | extract_body)
     SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
-    FINAL_SCRIPT="${SUBSTITUTED_SCRIPT}"
-    printf '%s' "$FINAL_SCRIPT" > "${CONTAINER_SCRIPT}"
+    FINAL_SCRIPT="${TEMPLATE_SCRIPT//\$\{SUBSTITUTED_SCRIPT\}/$SUBSTITUTED_SCRIPT}"
+    printf '%s' "$FINAL_SCRIPT" > "${DOCKERFILE_DIR}/Dockerfile" 
     )
 
     # Run container: only pass RELEASE_VERSION and FLAVOR
