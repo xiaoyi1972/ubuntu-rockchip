@@ -204,7 +204,7 @@ docker_run_prepare(){
         mkdir -p /usr/share/keyrings
         
         # Configure debootstrap to use correct keyring and skip verification as fallback
-        export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg --no-check-gpg"
+        export DEBOOTSTRAP_OPTS="--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg" #--no-check-gpg"
 
         # Create a wrapper to inject DEBOOTSTRAP_OPTS into calls to debootstrap.
         # This avoids modifying ubuntu-image source. The wrapper lives in /usr/local/bin
