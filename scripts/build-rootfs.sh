@@ -238,8 +238,6 @@ EOF
         cat /usr/local/bin/debootstrap
         chmod +x /usr/local/bin/debootstrap
 
-        bash -x /usr/local/bin/debootstrap --arch arm64 --variant=minbase --components=main,restricted,universe,multiverse plucky /rootfs-build/build/chroot http://ports.ubuntu.com/ubuntu-ports
-        
         # Ensure /usr/local/bin is earlier in PATH so the wrapper is used
         export PATH="/usr/local/bin:${PATH}"
         echo "✅ Installed debootstrap wrapper at /usr/local/bin/debootstrap (DEBOOTSTRAP_OPTS will be honored)"
@@ -262,7 +260,7 @@ EOF
 
         # Run ubuntu-image (auto-constructed YAML path)
         echo "🚀 Running ubuntu-image build (YAML: ${YAML_CONFIG_FILE})..."
-        if ! ubuntu-image --debug \
+        if ! ubuntu-image --debug --verbose \
             --workdir "${BUILD_DIR}" \
             --output-dir "${BUILD_DIR}/img" \
             classic "${YAML_CONFIG_FILE}"; then
