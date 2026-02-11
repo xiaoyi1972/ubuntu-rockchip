@@ -230,7 +230,8 @@ docker_run_prepare(){
             mkdir -p /usr/local/bin
         fi
 
-        cat > /usr/local/bin/debootstrap <<'EOF' ${SUBSTITUTED_SCRIPT} 
+        cat > /usr/local/bin/debootstrap <<'EOF' 
+        ${SUBSTITUTED_SCRIPT} 
 EOF
         chmod +x /usr/local/bin/debootstrap
         # Ensure /usr/local/bin is earlier in PATH so the wrapper is used
