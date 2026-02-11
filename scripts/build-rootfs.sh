@@ -199,7 +199,7 @@ docker_run_prepare(){
 
         # Ensure ubuntu archive keyring is available for debootstrap
         apt-get update -y -qq || true
-        apt-get install -y --no-install-recommends ubuntu-keyring gnupg || true
+        apt-get install -y --reinstall ubuntu-keyring debian-archive-keyring gnupg || true
 
         # Monitor chroot creation via inotify
         (
