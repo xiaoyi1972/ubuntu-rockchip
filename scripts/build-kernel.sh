@@ -104,7 +104,7 @@ echo "内核仓库: ${KERNEL_REPO:-未定义}"
 EXPECTED_GCC_VERSION=$(docker run --rm --entrypoint /bin/bash \
     -e DEBIAN_FRONTEND=noninteractive \
     -e DEBCONF_NONINTERACTIVE_SEEN=true \
-    ubuntu:"${UBUNTU_VERSION}" -c "
+    ghcr.io/sfqr0414/ubuntu:"${UBUNTU_VERSION}" -c "
     apt-get update -qq >/dev/null && 
     apt-get install -qq --no-install-recommends gcc -y >/dev/null && 
     gcc --version | head -1 | awk '{print \$4}' | sed 's/)//'
