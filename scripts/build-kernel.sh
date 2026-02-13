@@ -260,6 +260,12 @@ echo "容器内 gawk 版本: $(gawk --version | head -1)"
 echo "容器内 gawk 路径: $(which gawk)"
 echo "容器内 gawk 功能测试: $(echo '2+2' | gawk '{print $1}')"
 
+command -v modinfo || { echo "Error: modinfo (kmod) 未安装"; exit 1; }  # 添加
+command -v depmod || { echo "Error: depmod (kmod) 未安装"; exit 1; }    # 添加
+
+echo "✓ modinfo: $(which modinfo)"
+echo "✓ depmod: $(which depmod)"
+
 # 修复 Git 克隆逻辑：先检查目录是否存在，不存在则克隆，存在则拉取
 echo "===== 克隆/更新内核源码 ====="
 mkdir -p build && cd build || { echo "进入 build 目录失败"; exit 1; }
