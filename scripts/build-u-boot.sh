@@ -245,6 +245,14 @@ command -v cpio || { echo "Error: cpio 未安装"; exit 1; }
 command -v dpkg-buildpackage || { echo "Error: dpkg-buildpackage 未安装"; exit 1; }
 command -v aarch64-linux-gnu-gcc || { echo "Error: aarch64-linux-gnu-gcc 未安装"; exit 1; }
 
+# 校验 dtc (device-tree-compiler)
+if ! command -v dtc; then
+    echo "Error: dtc (device-tree-compiler) 安装失败"
+    exit 1
+fi
+echo "dtc 版本: \$(dtc --version | head -1)"
+echo "dtc 路径: \$(which dtc)"
+
 # 创建 build 目录并切换
 mkdir -p build && cd build || { echo "创建/进入 build 目录失败"; exit 1; }
 
