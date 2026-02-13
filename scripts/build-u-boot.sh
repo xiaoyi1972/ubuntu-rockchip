@@ -148,7 +148,8 @@ if ! docker images | grep -q "${DOCKER_IMAGE}"; then
 # 定义 ARG（必须在 FROM 前）
 ARG UBUNTU_VERSION=25.04
 # 基础镜像
-FROM ubuntu:\${UBUNTU_VERSION}
+# FROM ubuntu:\${UBUNTU_VERSION}
+FROM ghcr.io/sfqr0414/ubuntu:${UBUNTU_VERSION}
 
 # 定义容器内需要的 ARG
 ARG UBUNTU_VERSION
