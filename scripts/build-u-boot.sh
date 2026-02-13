@@ -133,6 +133,17 @@ fix_docker_permission() {
 }
 
 # ===================== 第五步：构建 Docker 镜像（包含 U-Boot 编译依赖） =====================
+# 强制重建检查（默认启用）
+case "${FORCE_REBUILD:-true}" in
+    false|False|FALSE|N|n|0)
+        echo "===== 跳过强制重建（使用缓存镜像） ====="
+        ;;
+    *)
+        echo "===== 强制重建模式：删除现有 Docker 镜像 ====="
+        docker rmi "${DOCKER_IMAGE}" 2>/dev/null || true
+        ;;
+esac
+
 if ! docker images | grep -q "${DOCKER_IMAGE}"; then
     echo "===== 构建 U-Boot 编译 Docker 镜像 ====="
     # 验证构建上下文路径存在
