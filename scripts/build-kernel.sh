@@ -159,7 +159,7 @@ debhelper fakeroot build-essential dpkg-dev devscripts \
 bc bison flex libssl-dev libncurses-dev libelf-dev dwarves \
 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
 git wget libterm-readline-gnu-perl \
-gawk cpio && \
+gawk cpio kmod && \
 echo "安装后检查 gawk 路径：" && \
 which gawk || (echo "gawk 安装后未找到，重新安装" && apt-get install -y --reinstall gawk) && \
 apt-get clean && rm -rf /var/lib/apt/lists/*
