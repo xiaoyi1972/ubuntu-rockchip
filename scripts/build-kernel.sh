@@ -345,7 +345,6 @@ docker_run_prepare(){
         # Print kernel version
         echo "Build complete, kernel version"
         echo "${KERNEL_VER}"
-        EOF
     }
 
     SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
