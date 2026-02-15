@@ -109,100 +109,99 @@ EXPECTED_GCC_VERSION=$(docker run --rm --entrypoint /bin/bash \
     apt-get install -qq --no-install-recommends gcc -y >/dev/null && 
     gcc --version | head -1 | awk '{print \$4}' | sed 's/)//'
 ")
+
 if [ -z "${EXPECTED_GCC_VERSION}" ]; then
     echo "Error: 无法获取 Ubuntu ${UBUNTU_VERSION} 的 GCC 版本"
     exit 1
 fi
+
 echo "Ubuntu ${UBUNTU_VERSION} 默认 GCC 版本: ${EXPECTED_GCC_VERSION}"
 
-# ===================== 构建 Docker 镜像（HEREDOC 内联脚本，无临时文件/转义符） =====================
-if ! docker images | grep -q "${DOCKER_IMAGE}"; then
-    echo "===== 构建 Docker 镜像 ====="
-    # 验证构建上下文路径存在
-    if [ ! -d "${HOST_KERNEL_ROOT}" ]; then
-        echo "Error: 构建上下文路径不存在 → ${HOST_KERNEL_ROOT}"
-        exit 1
-    fi
+TEMP_DOCKERFILE=$(mktemp)
+echo "调试：临时 Dockerfile 路径 = ${TEMP_DOCKERFILE}"
+docker_build_prepare(){
+    (
+    run_script() {
+        #!/bin/bash
+        set -eE
+        #trap 'echo "环境构建错误: 行号 $LINENO"; exit 1' ERR
 
-    # 生成 Dockerfile（HEREDOC 内联所有复杂逻辑，无转义符/临时脚本）
-    TEMP_DOCKERFILE=$(mktemp)
-    echo "调试：临时 Dockerfile 路径 = ${TEMP_DOCKERFILE}"
-    cat > "${TEMP_DOCKERFILE}" << EOF
-# 定义 ARG（必须在 FROM 前）
-ARG UBUNTU_VERSION=25.04
-# 基础镜像
-FROM ghcr.io/sfqr0414/ubuntu:${UBUNTU_VERSION}
-# FROM ubuntu:\${UBUNTU_VERSION}
+        # 安装依赖（容错：升级失败不中断）
+        apt-get update && \
+        apt-get upgrade -y || true && \
+        apt-get install -y --no-install-recommends \
+            lsb-release \
+            debhelper fakeroot build-essential dpkg-dev devscripts \
+            bc bison flex libssl-dev libncurses-dev libelf-dev dwarves \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            git wget libterm-readline-gnu-perl \
+            gawk cpio kmod && \
+        echo "安装后检查 gawk 路径：" && \
+        which gawk || (echo "gawk 安装后未找到，重新安装" && apt-get install -y --reinstall gawk) && \
+        apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 定义容器内需要的 ARG
-ARG UBUNTU_VERSION
-ARG EXPECTED_GCC_VERSION
+        # 校验 Ubuntu 版本
+        ACTUAL_UBUNTU_VERSION=$(lsb_release -rs)
+        echo "容器内 Ubuntu 版本: $ACTUAL_UBUNTU_VERSION"
+        echo "预期 Ubuntu 版本: $UBUNTU_VERSION"
+        if [ "$ACTUAL_UBUNTU_VERSION" != "$UBUNTU_VERSION" ]; then
+            echo "版本不匹配：预期 $UBUNTU_VERSION，实际 $ACTUAL_UBUNTU_VERSION"
+            exit 1
+        fi
 
-# 全局环境变量（消除交互警告）
-ENV DEBIAN_FRONTEND=noninteractive
-ENV DEBCONF_NONINTERACTIVE_SEEN=true
-ENV LANG=C.UTF-8
-ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        # 校验 GCC 版本
+        ACTUAL_GCC_VERSION=$(gcc --version | head -1 | awk '{print $4}' | sed 's/)//')
+        echo "容器内 GCC 版本: $ACTUAL_GCC_VERSION"
+        echo "预期 GCC 版本: $EXPECTED_GCC_VERSION"
+        if [ "$ACTUAL_GCC_VERSION" != "$EXPECTED_GCC_VERSION" ]; then
+            echo "版本不匹配：预期 $EXPECTED_GCC_VERSION，实际 $ACTUAL_GCC_VERSION"
+            exit 1
+        fi
 
-# 核心：HEREDOC 内联脚本（无转义符，直接写标准 Shell）
-RUN <<SCRIPT
-#!/bin/bash
-set -eE
-trap 'echo "环境构建错误: 行号 \$LINENO"; exit 1' ERR
+        # 增强 gawk 校验（无转义符，直接写逻辑）
+        echo "===== 调试 gawk 安装 ====="
+        echo "当前 PATH: $PATH"
+        ls -l /usr/bin/gawk* || true
 
-# 安装依赖（容错：升级失败不中断）
-apt-get update && \
-apt-get upgrade -y || true && \
-apt-get install -y --no-install-recommends \
-lsb-release \
-debhelper fakeroot build-essential dpkg-dev devscripts \
-bc bison flex libssl-dev libncurses-dev libelf-dev dwarves \
-gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-git wget libterm-readline-gnu-perl \
-gawk cpio kmod && \
-echo "安装后检查 gawk 路径：" && \
-which gawk || (echo "gawk 安装后未找到，重新安装" && apt-get install -y --reinstall gawk) && \
-apt-get clean && rm -rf /var/lib/apt/lists/*
+        # 检查 gawk 可执行性
+        if [ ! -x "/usr/bin/gawk" ]; then
+            echo "Error: gawk 可执行文件不存在/不可执行"
+            echo "文件信息: " && stat /usr/bin/gawk || true
+            echo "已安装包信息: " && dpkg -l gawk
+            exit 1
+        else
+            echo "gawk 安装成功，版本: $(gawk --version | head -1)"
+            echo "gawk 路径: $(which gawk)"
+            echo "gawk 功能测试: $(echo '1+1' | gawk '{print \$1}')"
+        fi
+    }
 
-# 校验 Ubuntu 版本
-ACTUAL_UBUNTU_VERSION=\$(lsb_release -rs)
-echo "容器内 Ubuntu 版本: \$ACTUAL_UBUNTU_VERSION"
-echo "预期 Ubuntu 版本: \$UBUNTU_VERSION"
-if [ "\$ACTUAL_UBUNTU_VERSION" != "\$UBUNTU_VERSION" ]; then
-    echo "版本不匹配：预期 \$UBUNTU_VERSION，实际 \$ACTUAL_UBUNTU_VERSION"
-    exit 1
-fi
-
-# 校验 GCC 版本
-ACTUAL_GCC_VERSION=\$(gcc --version | head -1 | awk '{print \$4}' | sed 's/)//')
-echo "容器内 GCC 版本: \$ACTUAL_GCC_VERSION"
-echo "预期 GCC 版本: \$EXPECTED_GCC_VERSION"
-if [ "\$ACTUAL_GCC_VERSION" != "\$EXPECTED_GCC_VERSION" ]; then
-    echo "版本不匹配：预期 \$EXPECTED_GCC_VERSION，实际 \$ACTUAL_GCC_VERSION"
-    exit 1
-fi
-
-# 增强 gawk 校验（无转义符，直接写逻辑）
-echo "===== 调试 gawk 安装 ====="
-echo "当前 PATH: \$PATH"
-ls -l /usr/bin/gawk* || true
-
-# 检查 gawk 可执行性
-if [ ! -x "/usr/bin/gawk" ]; then
-    echo "Error: gawk 可执行文件不存在/不可执行"
-    echo "文件信息: " && stat /usr/bin/gawk || true
-    echo "已安装包信息: " && dpkg -l gawk
-    exit 1
-else
-    echo "gawk 安装成功，版本: \$(gawk --version | head -1)"
-    echo "gawk 路径: \$(which gawk)"
-    echo "gawk 功能测试: \$(echo '1+1' | gawk '{print \$1}')"
-fi
-SCRIPT
-
-# 设置工作目录
-WORKDIR /kernel-build
+    docker_build_file() {
+        # 定义 ARG（必须在 FROM 前）
+        ARG UBUNTU_VERSION=25.04
+        # 基础镜像
+        FROM ghcr.io/sfqr0414/ubuntu:${UBUNTU_VERSION}
+        # 定义容器内需要的 ARG
+        ARG UBUNTU_VERSION
+        ARG EXPECTED_GCC_VERSION
+        # 全局环境变量（消除交互警告）
+        ENV DEBIAN_FRONTEND=noninteractive
+        ENV DEBCONF_NONINTERACTIVE_SEEN=true
+        ENV LANG=C.UTF-8
+        ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        # 核心：HEREDOC 内联脚本（无转义符，直接写标准 Shell）
+        RUN << EOF 
+        ${SUBSTITUTED_SCRIPT} 
 EOF
+        # 设置工作目录
+        WORKDIR /kernel-build
+    }
+
+    TEMPLATE_SCRIPT=$(type docker_build_file | extract_body)
+    SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
+    FINAL_SCRIPT="${TEMPLATE_SCRIPT//\$\{SUBSTITUTED_SCRIPT\}/$SUBSTITUTED_SCRIPT}"
+    printf '%s' "$FINAL_SCRIPT" > "${TEMP_DOCKERFILE}" 
+    )
 
     # 执行 Docker 构建（仅传递 ARG，无其他依赖）
     echo "===== 执行 Docker Build ====="
@@ -222,6 +221,17 @@ EOF
 
     # 仅清理临时 Dockerfile（无其他临时文件）
     rm -f "${TEMP_DOCKERFILE}"
+}
+
+# ===================== 构建 Docker 镜像（HEREDOC 内联脚本，无临时文件/转义符） =====================
+if ! docker images | grep -q "${DOCKER_IMAGE}"; then
+    echo "===== 构建 Docker 镜像 ====="
+    # 验证构建上下文路径存在
+    if [ ! -d "${HOST_KERNEL_ROOT}" ]; then
+        echo "Error: 构建上下文路径不存在 → ${HOST_KERNEL_ROOT}"
+        exit 1
+    fi
+    docker_build_prepare
 else
     echo "Docker 镜像已存在，跳过构建步骤"
 fi
@@ -231,123 +241,137 @@ echo "===== 启动容器构建内核 ====="
 
 # 临时文件仅用于容器内编译脚本（若想彻底无临时文件，可改用 heredoc 传入容器，见补充说明）
 CONTAINER_SCRIPT=$(mktemp)
-cat > "${CONTAINER_SCRIPT}" << 'EOF'
-#!/bin/bash
-set -eE
-trap 'echo "容器内错误: 行号 $LINENO"; exit 1' ERR
+docker_run_prepare(){
+    (
+    run_script() {
+        #!/bin/bash
+        set -eE
+        # trap 'echo "容器内错误: 行号 $LINENO"; exit 1' ERR
 
-# 调试：输出容器内环境变量
-echo "===== 容器内环境变量 ====="
-echo "SUITE: ${SUITE}"
-echo "KERNEL_REPO: ${KERNEL_REPO}"
-echo "KERNEL_BRANCH: ${KERNEL_BRANCH}"
-echo "KERNEL_FLAVOR: ${KERNEL_FLAVOR}"
-echo "当前目录: $(pwd)"
-echo "目录内容: $(ls -la)"
+        # 调试：输出容器内环境变量
+        echo "===== 容器内环境变量 ====="
+        echo "SUITE: ${SUITE}"
+        echo "KERNEL_REPO: ${KERNEL_REPO}"
+        echo "KERNEL_BRANCH: ${KERNEL_BRANCH}"
+        echo "KERNEL_FLAVOR: ${KERNEL_FLAVOR}"
+        echo "当前目录: $(pwd)"
+        echo "目录内容: $(ls -la)"
 
-# 核心修复：容器内强制安装 gawk（双重保障）
-echo "===== 容器内安装 gawk 依赖 ====="
-apt-get install -y --no-install-recommends gawk || { echo "gawk 安装失败"; exit 1; }
-# 替换为可靠的文件可执行性检查
-if [ ! -x "/usr/bin/gawk" ]; then
-    echo "Error: 容器内 gawk 安装后仍无法找到或不可执行"
-    echo "PATH: $PATH"
-    ls -l /usr/bin/gawk* || true
-    stat /usr/bin/gawk || true
-    exit 1
-fi
-echo "容器内 gawk 版本: $(gawk --version | head -1)"
-echo "容器内 gawk 路径: $(which gawk)"
-echo "容器内 gawk 功能测试: $(echo '2+2' | gawk '{print $1}')"
+        # 核心修复：容器内强制安装 gawk（双重保障）
+        echo "===== 容器内安装 gawk 依赖 ====="
+        apt-get install -y --no-install-recommends gawk || { echo "gawk 安装失败"; exit 1; }
+        # 替换为可靠的文件可执行性检查
+        if [ ! -x "/usr/bin/gawk" ]; then
+            echo "Error: 容器内 gawk 安装后仍无法找到或不可执行"
+            echo "PATH: $PATH"
+            ls -l /usr/bin/gawk* || true
+            stat /usr/bin/gawk || true
+            exit 1
+        fi
+        echo "容器内 gawk 版本: $(gawk --version | head -1)"
+        echo "容器内 gawk 路径: $(which gawk)"
+        echo "容器内 gawk 功能测试: $(echo '2+2' | gawk '{print $1}')"
 
-command -v modinfo || { echo "Error: modinfo (kmod) 未安装"; exit 1; }  # 添加
-command -v depmod || { echo "Error: depmod (kmod) 未安装"; exit 1; }    # 添加
+        command -v modinfo || { echo "Error: modinfo (kmod) 未安装"; exit 1; }  # 添加
+        command -v depmod || { echo "Error: depmod (kmod) 未安装"; exit 1; }    # 添加
 
-echo "✓ modinfo: $(which modinfo)"
-echo "✓ depmod: $(which depmod)"
+        echo "✓ modinfo: $(which modinfo)"
+        echo "✓ depmod: $(which depmod)"
 
-# 修复 Git 克隆逻辑：先检查目录是否存在，不存在则克隆，存在则拉取
-echo "===== 克隆/更新内核源码 ====="
-mkdir -p build && cd build || { echo "进入 build 目录失败"; exit 1; }
+        # 修复 Git 克隆逻辑：先检查目录是否存在，不存在则克隆，存在则拉取
+        echo "===== 克隆/更新内核源码 ====="
+        mkdir -p build && cd build || { echo "进入 build 目录失败"; exit 1; }
 
-# 检查仓库是否可访问
-echo "测试仓库可访问性: git ls-remote ${KERNEL_REPO} ${KERNEL_BRANCH}"
-git ls-remote "${KERNEL_REPO}" "${KERNEL_BRANCH}" || { echo "仓库/分支不可访问"; exit 1; }
+        # 检查仓库是否可访问
+        echo "测试仓库可访问性: git ls-remote ${KERNEL_REPO} ${KERNEL_BRANCH}"
+        git ls-remote "${KERNEL_REPO}" "${KERNEL_BRANCH}" || { echo "仓库/分支不可访问"; exit 1; }
 
-if [ -d "linux-rockchip/.git" ]; then
-    echo "源码目录已存在，执行 pull 更新"
-    git -C linux-rockchip pull --depth=2 || { 
-        echo "Git pull 失败，尝试重新克隆"; 
-        rm -rf linux-rockchip; 
+        if [ -d "linux-rockchip/.git" ]; then
+            echo "源码目录已存在，执行 pull 更新"
+            git -C linux-rockchip pull --depth=2 || { 
+                echo "Git pull 失败，尝试重新克隆"; 
+                rm -rf linux-rockchip; 
+            }
+        fi
+
+        if [ ! -d "linux-rockchip/.git" ]; then
+            echo "源码目录不存在，克隆仓库"
+            git clone --progress -b "${KERNEL_BRANCH}" "${KERNEL_REPO}" linux-rockchip --depth=2 || { 
+                echo "Git 克隆失败"; 
+                exit 1; 
+            }
+        fi
+
+        cd linux-rockchip || { echo "进入 linux-rockchip 目录失败"; exit 1; }
+        git checkout "${KERNEL_BRANCH}" || { echo "切换分支失败"; exit 1; }
+        echo "当前分支: $(git rev-parse --abbrev-ref HEAD)"
+        echo "最新提交: $(git log -1 --oneline)"
+
+        # 检查是否存在 debian/rules
+        echo "===== 检查编译配置文件 ====="
+        if [ ! -f "debian/rules" ]; then
+            echo "Error: 源码目录中未找到 debian/rules 文件"
+            echo "当前目录文件: $(ls -la debian/ | head -20)"
+            exit 1
+        fi
+
+        # 提取内核版本
+        echo "===== 提取内核版本 ====="
+        KERNEL_VER=$(make -s kernelversion) || { echo "提取内核版本失败"; exit 1; }
+        echo "内核源码版本: ${KERNEL_VER}"
+
+        # 编译前检查依赖
+        echo "===== 检查编译依赖 ====="
+        dpkg-architecture -aarm64 || { echo "dpkg-architecture 执行失败"; exit 1; }
+        which aarch64-linux-gnu-gcc || { echo "未找到 aarch64-linux-gnu-gcc"; exit 1; }
+        aarch64-linux-gnu-gcc --version
+
+        # 编译内核：添加详细输出，重定向错误到标准输出
+        echo "===== 开始编译内核 ====="
+        export $(dpkg-architecture -aarm64)
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CC=aarch64-linux-gnu-gcc
+        export LANG=C
+
+        echo "执行: fakeroot debian/rules clean"
+        fakeroot debian/rules clean 2>&1 || { echo "clean 步骤失败"; exit 1; }
+
+        echo "执行: fakeroot debian/rules binary-headers binary-rockchip do_mainline_build=true"
+        fakeroot debian/rules binary-headers binary-rockchip do_mainline_build=true 2>&1 || { 
+            echo "编译内核失败"; 
+            exit 1; 
+        }
+
+        # 输出内核版本（供外部捕获）
+        echo "===== 编译完成，内核版本 ====="
+        echo "${KERNEL_VER}"
+        EOF
     }
-fi
 
-if [ ! -d "linux-rockchip/.git" ]; then
-    echo "源码目录不存在，克隆仓库"
-    git clone --progress -b "${KERNEL_BRANCH}" "${KERNEL_REPO}" linux-rockchip --depth=2 || { 
-        echo "Git 克隆失败"; 
-        exit 1; 
-    }
-fi
+    SUBSTITUTED_SCRIPT=$(type run_script | extract_body) 
+    FINAL_SCRIPT="${SUBSTITUTED_SCRIPT}"
+    printf '%s' "$FINAL_SCRIPT" > "${CONTAINER_SCRIPT}"
+    )
 
-cd linux-rockchip || { echo "进入 linux-rockchip 目录失败"; exit 1; }
-git checkout "${KERNEL_BRANCH}" || { echo "切换分支失败"; exit 1; }
-echo "当前分支: $(git rev-parse --abbrev-ref HEAD)"
-echo "最新提交: $(git log -1 --oneline)"
-
-# 检查是否存在 debian/rules
-echo "===== 检查编译配置文件 ====="
-if [ ! -f "debian/rules" ]; then
-    echo "Error: 源码目录中未找到 debian/rules 文件"
-    echo "当前目录文件: $(ls -la debian/ | head -20)"
-    exit 1
-fi
-
-# 提取内核版本
-echo "===== 提取内核版本 ====="
-KERNEL_VER=$(make -s kernelversion) || { echo "提取内核版本失败"; exit 1; }
-echo "内核源码版本: ${KERNEL_VER}"
-
-# 编译前检查依赖
-echo "===== 检查编译依赖 ====="
-dpkg-architecture -aarm64 || { echo "dpkg-architecture 执行失败"; exit 1; }
-which aarch64-linux-gnu-gcc || { echo "未找到 aarch64-linux-gnu-gcc"; exit 1; }
-aarch64-linux-gnu-gcc --version
-
-# 编译内核：添加详细输出，重定向错误到标准输出
-echo "===== 开始编译内核 ====="
-export $(dpkg-architecture -aarm64)
-export CROSS_COMPILE=aarch64-linux-gnu-
-export CC=aarch64-linux-gnu-gcc
-export LANG=C
-
-echo "执行: fakeroot debian/rules clean"
-fakeroot debian/rules clean 2>&1 || { echo "clean 步骤失败"; exit 1; }
-
-echo "执行: fakeroot debian/rules binary-headers binary-rockchip do_mainline_build=true"
-fakeroot debian/rules binary-headers binary-rockchip do_mainline_build=true 2>&1 || { 
-    echo "编译内核失败"; 
-    exit 1; 
+    # 执行容器内编译
+    docker run --rm -i \
+        --privileged \
+        -e SUITE="${SUITE}" \
+        -e RELEASE_VERSION="${UBUNTU_VERSION}" \
+        -e KERNEL_REPO="${KERNEL_REPO}" \
+        -e KERNEL_BRANCH="${KERNEL_BRANCH}" \
+        -e KERNEL_FLAVOR="${KERNEL_FLAVOR}" \
+        -v "${HOST_KERNEL_ROOT}:/kernel-build" \
+        -v "${CONTAINER_SCRIPT}:/container-script.sh:ro" \
+        -w /kernel-build \
+        "${DOCKER_IMAGE}" \
+        /bin/bash /container-script.sh | tee /tmp/kernel-build-container.log
+    
+        # Clean up container script
+        rm -f "${CONTAINER_SCRIPT}"
 }
 
-# 输出内核版本（供外部捕获）
-echo "===== 编译完成，内核版本 ====="
-echo "${KERNEL_VER}"
-EOF
-
-# 执行容器内编译
-docker run --rm -i \
-    --privileged \
-    -e SUITE="${SUITE}" \
-    -e RELEASE_VERSION="${UBUNTU_VERSION}" \
-    -e KERNEL_REPO="${KERNEL_REPO}" \
-    -e KERNEL_BRANCH="${KERNEL_BRANCH}" \
-    -e KERNEL_FLAVOR="${KERNEL_FLAVOR}" \
-    -v "${HOST_KERNEL_ROOT}:/kernel-build" \
-    -v "${CONTAINER_SCRIPT}:/container-script.sh:ro" \
-    -w /kernel-build \
-    "${DOCKER_IMAGE}" \
-    /bin/bash /container-script.sh | tee /tmp/kernel-build-container.log
+docker_run_prepare
 
 # 提取内核版本并清理临时文件
 KERNEL_VERSION=$(grep -E "^[0-9]+\.[0-9]+\.[0-9]+" /tmp/kernel-build-container.log | tail -1)
