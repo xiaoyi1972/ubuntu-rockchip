@@ -1,15 +1,19 @@
 name: Test
-run-name: Test ${{ inputs.rootfs_target || 'rootfs' }}
+run-name: Test ${{ inputs.rootfs_target }}
 on:
   schedule:
     - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       rootfs_target:
-        description: '指定 rootfs 标识（默认值：rootfs）'
-        required: false
-        default: 'rootfs'
-        type: string
+        description: '指定 rootfs 标识'
+        required: true
+        type: choice
+        options:
+          - rootfs
+          - kernel
+          - uboot
+        default: rootfs
 
 env:
   REPO_OWNER: xiaoyi1972
