@@ -5,6 +5,14 @@ trap 'echo Error: in $0 on line $LINENO' ERR
 
 cd "$(dirname -- "$(readlink -f -- "$0")")"
 
+extract_body() {
+    perl -0777 -ne 'while (/\b(?:function\s+)?([A-Za-z_]\w*)\s*\(\s*\)\s*(\{(?:[^{}]++|(?2))*\})/g) { my $c = substr($2,1,-1); $c =~ s/^[ \t\r\n]+//; $c =~ s/[ \t\r\n]+$//; # remove semicolons before [...]
+$c =~ s/;[ \t]*(?=\n)//g; $c =~ s/;[ \t]*\z//; # collapse multiple blank lines
+$c =~ s/\n[ \t]*\n+/\n/g; print "$c\n" }' "$@"
+}
+
+export -f extract_body
+
 usage() {
 cat << HEREDOC
 Usage: $0 --board=[orangepi-5] --suite=[jammy|noble] --flavor=[server|desktop]
